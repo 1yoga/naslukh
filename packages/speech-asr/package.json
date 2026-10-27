@@ -10,6 +10,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --experimental-strip-types --experimental-sqlite --test test/*.test.ts",
-    "run-file": "node --experimental-strip-types --experimental-sqlite src/cli.ts"
+    "run-file": "node --experimental-strip-types --experimental-sqlite src/cli.ts",
+    "run-pipeline": "node --experimental-strip-types --experimental-sqlite src/pipeline-cli.ts"
   }
 }

@@ -28,23 +28,25 @@ export interface VadFileResult {
   commits: number
 }
 
-export interface RunVadFileOptions {
-  wavPath: string
+export interface RunVadSamplesOptions {
+  samples: Float32Array
   modelPath: string
   db: SqlDatabase
   jobId?: string
-  /** Версия модели в задании (по умолчанию Silero). */
   modelId?: string
   modelVersion?: string
-  /** Продолжить существующее задание с курсора. */
   resume?: boolean
-  /** Для тестов; по умолчанию os.freemem(). */
+  audioPath?: string | null
   freeMemoryBytes?: number
   device?: {
     deviceModel: string
     osName: string
     osVersion: string
   }
+}
+
+export type RunVadFileOptions = Omit<RunVadSamplesOptions, "samples" | "audioPath"> & {
+  wavPath: string
 }
 
 function createVad(modelPath: string) {
@@ -66,20 +68,14 @@ function createVad(modelPath: string) {
   )
 }
 
-/**
- * Один проход Silero по файлу: интервалы и курсор пишутся в SQLite пакетами.
- * Уже записанные интервалы после resume не пересчитываются.
- */
-export function runVadFile(options: RunVadFileOptions): VadFileResult {
+/** Один проход Silero по PCM 16 кГц. */
+export function runVadSamples(options: RunVadSamplesOptions): VadFileResult {
   const device = options.device ?? {
     deviceModel: "node-harness",
     osName: "node",
     osVersion: process.versions.node,
   }
-  const wave = sherpa.readWave(options.wavPath)
-  if (wave.sampleRate !== SAMPLE_RATE_HZ) {
-    throw new Error(`Нужен ${SAMPLE_RATE_HZ} Гц, в файле ${wave.sampleRate}`)
-  }
+  const waveSamples = options.samples
 
   migrate(options.db)
   assertCanStartRecognition(options.freeMemoryBytes ?? freemem())
@@ -96,7 +92,7 @@ export function runVadFile(options: RunVadFileOptions): VadFileResult {
       source: "file",
       modelId,
       modelVersion,
-      audioPath: options.wavPath,
+      audioPath: options.audioPath ?? null,
     })
     job = setJobState(options.db, jobId, "recognizing", "resume", device)
   }
@@ -108,14 +104,13 @@ export function runVadFile(options: RunVadFileOptions): VadFileResult {
   let lastCommitted = cursor
   let scanned = cursor
 
-  // Смещение start у sherpa считается от начала потока acceptWaveform.
   const offset = cursor
-  const samples = wave.samples.subarray(cursor)
+  const samples = waveSamples.subarray(cursor)
 
   for (let pos = 0; pos + WINDOW <= samples.length; pos += WINDOW) {
     vad.acceptWaveform(samples.subarray(pos, pos + WINDOW))
     scanned = cursor + pos + WINDOW
-    drain(vad, pending, offset, wave.samples.length)
+    drain(vad, pending, offset, waveSamples.length)
     const batch = planVadCommit({
       scannedSample: scanned,
       lastCommittedSample: lastCommitted,
@@ -142,8 +137,8 @@ export function runVadFile(options: RunVadFileOptions): VadFileResult {
     vad.acceptWaveform(tail)
   }
   vad.flush()
-  scanned = wave.samples.length
-  drain(vad, pending, offset, wave.samples.length)
+  scanned = waveSamples.length
+  drain(vad, pending, offset, waveSamples.length)
 
   const finalBatch = planVadCommit({
     scannedSample: scanned,
@@ -164,15 +159,31 @@ export function runVadFile(options: RunVadFileOptions): VadFileResult {
   const intervals = listVadIntervals(options.db, jobId)
   return {
     jobId,
-    totalSamples: wave.samples.length,
+    totalSamples: waveSamples.length,
     intervals,
-    chunks: buildSpeechChunks(intervals, wave.samples.length),
+    chunks: buildSpeechChunks(intervals, waveSamples.length),
     commits,
   }
 }
 
+export function runVadFile(options: RunVadFileOptions): VadFileResult {
+  const wave = sherpa.readWave(options.wavPath)
+  if (wave.sampleRate !== SAMPLE_RATE_HZ) {
+    throw new Error(`Нужен ${SAMPLE_RATE_HZ} Гц, в файле ${wave.sampleRate}`)
+  }
+  return runVadSamples({
+    ...options,
+    samples: wave.samples,
+    audioPath: options.wavPath,
+  })
+}
+
 function drain(
-  vad: { isEmpty: () => boolean; front: () => { start: number; samples: Float32Array }; pop: () => void },
+  vad: {
+    isEmpty: () => boolean
+    front: () => { start: number; samples: Float32Array }
+    pop: () => void
+  },
   pending: SampleRange[],
   offset: number,
   totalSamples: number,
