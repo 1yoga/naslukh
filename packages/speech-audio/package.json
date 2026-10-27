@@ -1,0 +1,14 @@
+{
+  "name": "@naslukh/speech-audio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Opus 24 кбит/с для хранения моно PCM 16 кГц заданий Наслух.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  }
+}

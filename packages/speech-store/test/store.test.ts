@@ -15,6 +15,7 @@ import {
   listVadIntervals,
   migrate,
   resumeVadJob,
+  setJobAudio,
   setJobState,
 } from "../src/index.ts"
 import { openNodeSqlite } from "../src/node-sqlite.ts"
@@ -171,6 +172,30 @@ describe("speech-store", () => {
       const job = resumeVadJob(db, "job-4", MODEL)
       assert.equal(job.lastCommittedSample, 16_000)
       assert.equal(listSegments(db, "job-4")[0].text, "привет")
+    } finally {
+      db.close()
+    }
+  })
+
+  it("сохраняет путь Opus и отпечаток", () => {
+    const db = openNodeSqlite()
+    try {
+      migrate(db)
+      createJob(db, {
+        id: "job-5",
+        source: "file",
+        modelId: MODEL,
+        modelVersion: MODEL,
+      })
+      const job = setJobAudio(db, "job-5", {
+        path: "/tmp/a.nsop",
+        container: "nsop",
+        fingerprintSize: 1000,
+        fingerprintSha256: "a".repeat(64),
+      })
+      assert.equal(job.audioPath, "/tmp/a.nsop")
+      assert.equal(job.audioContainer, "nsop")
+      assert.equal(job.fingerprintSize, 1000)
     } finally {
       db.close()
     }

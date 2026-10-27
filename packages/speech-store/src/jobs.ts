@@ -29,6 +29,15 @@ function mapJob(row: Record<string, string | number | null | bigint>): JobRow {
     checkpointFormat: Number(row.checkpoint_format),
     language: "ru",
     audioPath: row.audio_path === null ? null : String(row.audio_path),
+    audioContainer: row.audio_container === null ? null : String(row.audio_container),
+    fingerprintSize:
+      row.fingerprint_size === null || row.fingerprint_size === undefined
+        ? null
+        : Number(row.fingerprint_size),
+    fingerprintSha256:
+      row.fingerprint_sha256 === null || row.fingerprint_sha256 === undefined
+        ? null
+        : String(row.fingerprint_sha256),
     vadCursorSample: Number(row.vad_cursor_sample),
     lastCommittedSample: Number(row.last_committed_sample),
     errorMessage: row.error_message === null ? null : String(row.error_message),
@@ -78,6 +87,35 @@ export function getJob(db: SqlDatabase, jobId: string): JobRow {
   const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get(jobId)
   if (!row) throw new Error(`Задание ${jobId} не найдено`)
   return mapJob(row)
+}
+
+/** Путь к звуку, контейнер и отпечаток (D14) — одной записью. */
+export function setJobAudio(
+  db: SqlDatabase,
+  jobId: string,
+  audio: {
+    path: string
+    container: string
+    fingerprintSize: number
+    fingerprintSha256: string
+  },
+  now = Date.now(),
+): JobRow {
+  getJob(db, jobId)
+  db.prepare(
+    `UPDATE jobs SET
+      audio_path = ?, audio_container = ?,
+      fingerprint_size = ?, fingerprint_sha256 = ?, updated_at = ?
+     WHERE id = ?`,
+  ).run(
+    audio.path,
+    audio.container,
+    audio.fingerprintSize,
+    audio.fingerprintSha256,
+    now,
+    jobId,
+  )
+  return getJob(db, jobId)
 }
 
 export function setJobState(

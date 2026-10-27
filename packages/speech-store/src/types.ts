@@ -15,6 +15,9 @@ export interface JobRow {
   checkpointFormat: number
   language: "ru"
   audioPath: string | null
+  audioContainer: string | null
+  fingerprintSize: number | null
+  fingerprintSha256: string | null
   vadCursorSample: number
   lastCommittedSample: number
   errorMessage: string | null

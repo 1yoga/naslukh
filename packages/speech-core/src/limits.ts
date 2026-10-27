@@ -32,6 +32,15 @@ export const VAD_COMMIT_SEC = 60
 
 export const VAD_COMMIT_SAMPLES = VAD_COMMIT_SEC * SAMPLE_RATE_HZ
 
+/**
+ * Стартовый битрейт Opus (D5). Итог пишет замер на корпусе.
+ * Единица — бит/с.
+ */
+export const OPUS_BITRATE_BPS = 24_000
+
+/** Длина кадра Opus: 20 мс на шкале 16 кГц. */
+export const OPUS_FRAME_SAMPLES = 320
+
 /** Меняется, когда меняется запись чекпоинта на диске. */
 export const CHECKPOINT_FORMAT = 1
 

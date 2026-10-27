@@ -5,6 +5,7 @@ export {
   getJob,
   listVadIntervals,
   resumeVadJob,
+  setJobAudio,
   setJobState,
 } from "./jobs.ts"
 export {
