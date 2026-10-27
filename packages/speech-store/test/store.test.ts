@@ -11,6 +11,7 @@ import {
   commitSegment,
   commitVad,
   createJob,
+  findJobByFingerprint,
   listSegments,
   listVadIntervals,
   migrate,
@@ -196,6 +197,8 @@ describe("speech-store", () => {
       assert.equal(job.audioPath, "/tmp/a.nsop")
       assert.equal(job.audioContainer, "nsop")
       assert.equal(job.fingerprintSize, 1000)
+      const found = findJobByFingerprint(db, 1000, "a".repeat(64))
+      assert.equal(found?.id, "job-5")
     } finally {
       db.close()
     }

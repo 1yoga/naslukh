@@ -2,6 +2,7 @@ export { migrate } from "./migrate.ts"
 export {
   commitVad,
   createJob,
+  findJobByFingerprint,
   getJob,
   listVadIntervals,
   resumeVadJob,

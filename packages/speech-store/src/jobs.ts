@@ -89,6 +89,19 @@ export function getJob(db: SqlDatabase, jobId: string): JobRow {
   return mapJob(row)
 }
 
+export function findJobByFingerprint(
+  db: SqlDatabase,
+  size: number,
+  sha256: string,
+): JobRow | null {
+  const row = db
+    .prepare(
+      "SELECT * FROM jobs WHERE fingerprint_size = ? AND fingerprint_sha256 = ? LIMIT 1",
+    )
+    .get(size, sha256)
+  return row ? mapJob(row) : null
+}
+
 /** Путь к звуку, контейнер и отпечаток (D14) — одной записью. */
 export function setJobAudio(
   db: SqlDatabase,
