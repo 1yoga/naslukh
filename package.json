@@ -13,7 +13,10 @@
     "typecheck:speech-core": "tsc -p packages/speech-core --noEmit",
     "test:speech-core": "npm test --prefix packages/speech-core",
     "typecheck:speech-store": "tsc -p packages/speech-store --noEmit",
-    "test:speech-store": "npm test --prefix packages/speech-store"
+    "test:speech-store": "npm test --prefix packages/speech-store",
+    "typecheck:speech-vad": "tsc -p packages/speech-vad --noEmit",
+    "test:speech-vad": "npm test --prefix packages/speech-vad",
+    "vad:file": "npm run run-file --prefix packages/speech-vad --"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -39,6 +42,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "oxlint": "^1.88.0",
+    "sherpa-onnx-node": "^2.0.1",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
     "vite": "^8.3.4"

@@ -1,0 +1,15 @@
+{
+  "name": "@naslukh/speech-vad",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node-харнесс Silero VAD: прогон файла, нарезка и чекпоинт в speech-store.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-strip-types --experimental-sqlite --test test/*.test.ts",
+    "run-file": "node --experimental-strip-types --experimental-sqlite src/cli.ts"
+  }
+}

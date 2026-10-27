@@ -154,12 +154,15 @@ export function commitVad(db: SqlDatabase, input: VadCommitInput): JobRow {
   db.exec("BEGIN")
   try {
     for (const interval of input.intervals) {
-      if (interval.startSample < job.vadCursorSample) {
+      // Lookback Silero может начать интервал чуть левее курсора; целиком
+      // слева от курсора повторно не пишем.
+      if (interval.endSample <= job.vadCursorSample) {
         throw new Error("Интервал левее курсора уже должен быть в базе")
       }
+      const startSample = Math.max(interval.startSample, job.vadCursorSample)
       db.prepare(
         "INSERT INTO vad_intervals (job_id, start_sample, end_sample) VALUES (?, ?, ?)",
-      ).run(input.jobId, interval.startSample, interval.endSample)
+      ).run(input.jobId, startSample, interval.endSample)
     }
     db.prepare(
       "UPDATE jobs SET vad_cursor_sample = ?, updated_at = ? WHERE id = ?",
