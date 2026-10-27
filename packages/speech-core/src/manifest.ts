@@ -33,6 +33,14 @@ function validateModel(model: SpeechModel): void {
       )
     }
   }
+  if (model.kind === "vad") {
+    if (model.role !== "vad") {
+      throw new ManifestError(`VAD-модель ${model.id} должна иметь role=vad`)
+    }
+    if (model.files.length < 1) {
+      throw new ManifestError(`У VAD-модели ${model.id} нет файлов`)
+    }
+  }
   for (const file of model.files) {
     if (!Number.isInteger(file.size) || file.size < 0) {
       throw new ManifestError(`У файла ${file.path} некорректный размер`)

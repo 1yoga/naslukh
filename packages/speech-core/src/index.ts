@@ -3,8 +3,12 @@ export {
   LIBRARY_VERSION,
   MAX_CHUNK_SAMPLES,
   MAX_CHUNK_SEC,
+  OVERLAP_SAMPLES,
+  OVERLAP_SEC,
   PIPELINE_VERSION,
   SAMPLE_RATE_HZ,
+  SOFT_CUT_MIN_SAMPLES,
+  SOFT_CUT_MIN_SEC,
   VAD_COMMIT_SAMPLES,
   VAD_COMMIT_SEC,
   VAD_PAD_SAMPLES,
@@ -21,6 +25,18 @@ export {
 } from "./capabilities.ts"
 export { ManifestError, assertManifest, fingerprintKey } from "./manifest.ts"
 export { MIGRATION_001 } from "./schema.ts"
+export {
+  buildSpeechChunks,
+  padSpeechInterval,
+  splitLongSpeech,
+} from "./chunk.ts"
+export type { SampleRange, SpeechChunk } from "./chunk.ts"
+export {
+  canResumeCheckpoint,
+  planVadCommit,
+  shouldCommitVad,
+} from "./checkpoint.ts"
+export type { CheckpointIdentity, VadCommit } from "./checkpoint.ts"
 export type {
   AudioSource,
   FileSource,
