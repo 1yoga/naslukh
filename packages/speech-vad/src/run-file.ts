@@ -1,6 +1,8 @@
+import { freemem } from "node:os"
 import sherpa from "sherpa-onnx-node"
 import {
   SAMPLE_RATE_HZ,
+  assertCanStartRecognition,
   buildSpeechChunks,
   planVadCommit,
 } from "../../speech-core/src/index.ts"
@@ -36,6 +38,8 @@ export interface RunVadFileOptions {
   modelVersion?: string
   /** Продолжить существующее задание с курсора. */
   resume?: boolean
+  /** Для тестов; по умолчанию os.freemem(). */
+  freeMemoryBytes?: number
   device?: {
     deviceModel: string
     osName: string
@@ -78,6 +82,7 @@ export function runVadFile(options: RunVadFileOptions): VadFileResult {
   }
 
   migrate(options.db)
+  assertCanStartRecognition(options.freeMemoryBytes ?? freemem())
   const jobId = options.jobId ?? `vad-${Date.now()}`
   const modelId = options.modelId ?? SILERO_MODEL_ID
   const modelVersion = options.modelVersion ?? SILERO_MODEL_ID

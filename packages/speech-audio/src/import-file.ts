@@ -1,6 +1,10 @@
 import { mkdirSync, writeFileSync } from "node:fs"
-import { dirname, join } from "node:path"
-import { fingerprintKey } from "../../speech-core/src/index.ts"
+import { freemem } from "node:os"
+import { join } from "node:path"
+import {
+  assertCanStartRecognition,
+  fingerprintKey,
+} from "../../speech-core/src/index.ts"
 import {
   createJob,
   findJobByFingerprint,
@@ -23,6 +27,8 @@ export interface ImportWavOptions {
   modelVersion: string
   /** Если отпечаток исходника уже есть — вернуть старое задание. */
   reuseFingerprint?: boolean
+  /** Для тестов; по умолчанию os.freemem(). */
+  freeMemoryBytes?: number
 }
 
 export interface ImportWavResult {
@@ -41,6 +47,7 @@ export async function importWavFile(
   options: ImportWavOptions,
 ): Promise<ImportWavResult> {
   migrate(options.db)
+  assertCanStartRecognition(options.freeMemoryBytes ?? freemem())
   const sourceFingerprint = await fingerprintFile(options.wavPath)
 
   if (options.reuseFingerprint !== false) {

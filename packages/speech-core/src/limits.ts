@@ -41,6 +41,12 @@ export const OPUS_BITRATE_BPS = 24_000
 /** Длина кадра Opus: 20 мс на шкале 16 кГц. */
 export const OPUS_FRAME_SAMPLES = 320
 
+/**
+ * Минимум свободной памяти для старта (D3).
+ * Смена только по замеру до выпуска.
+ */
+export const MIN_FREE_MEMORY_BYTES = 600 * 1024 * 1024
+
 /** Меняется, когда меняется запись чекпоинта на диске. */
 export const CHECKPOINT_FORMAT = 1
 

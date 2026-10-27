@@ -1,6 +1,8 @@
 import sherpa from "sherpa-onnx-node"
+import { freemem } from "node:os"
 import {
   SAMPLE_RATE_HZ,
+  assertCanStartRecognition,
   buildSpeechChunks,
   stitchByTokenCenters,
 } from "../../speech-core/src/index.ts"
@@ -31,6 +33,8 @@ export interface RunAsrFileOptions {
   sileroPath: string
   db: SqlDatabase
   jobId?: string
+  /** Для тестов; по умолчанию os.freemem(). */
+  freeMemoryBytes?: number
   device?: {
     deviceModel: string
     osName: string
@@ -56,6 +60,7 @@ export function runAsrFile(options: RunAsrFileOptions): AsrFileResult {
     osVersion: process.versions.node,
   }
   migrate(options.db)
+  assertCanStartRecognition(options.freeMemoryBytes ?? freemem())
   const jobId = options.jobId ?? `asr-${Date.now()}`
 
   createJob(options.db, {

@@ -7,7 +7,11 @@ import { ensureGigaamModel } from "../src/download.ts"
 import { GIGAAM_DIR } from "../src/paths.ts"
 import { createGigaamRecognizer } from "../src/recognize.ts"
 import { ensureSilero, runAsrFile } from "../src/run-file.ts"
-import { SAMPLE_RATE_HZ } from "../../speech-core/src/index.ts"
+import {
+  MIN_FREE_MEMORY_BYTES,
+  MemoryError,
+  SAMPLE_RATE_HZ,
+} from "../../speech-core/src/index.ts"
 import sherpa from "sherpa-onnx-node"
 
 describe("speech-asr", () => {
@@ -49,6 +53,29 @@ describe("speech-asr", () => {
       })
       assert.ok(result.segments >= 1)
       assert.ok(result.text.length > 0)
+    } finally {
+      db.close()
+    }
+  })
+
+  it("не стартует при нехватке памяти", async () => {
+    const modelDir = await ensureGigaamModel()
+    const sileroPath = await ensureSilero()
+    const example = join(GIGAAM_DIR, "test_wavs", "example.wav")
+    const db = openNodeSqlite()
+    try {
+      assert.throws(
+        () =>
+          runAsrFile({
+            wavPath: example,
+            modelDir,
+            sileroPath,
+            db,
+            jobId: "asr-oom",
+            freeMemoryBytes: MIN_FREE_MEMORY_BYTES - 1,
+          }),
+        (error: unknown) => error instanceof MemoryError,
+      )
     } finally {
       db.close()
     }

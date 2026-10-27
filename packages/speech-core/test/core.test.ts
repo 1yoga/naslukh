@@ -4,14 +4,18 @@ import {
   CHECKPOINT_FORMAT,
   MIGRATION_001,
   MAX_CHUNK_SAMPLES,
+  MIN_FREE_MEMORY_BYTES,
   OVERLAP_SAMPLES,
   PIPELINE_VERSION,
   SAMPLE_RATE_HZ,
   VAD_COMMIT_SAMPLES,
   VAD_PAD_SAMPLES,
+  MemoryError,
+  assertCanStartRecognition,
   assertManifest,
   buildSpeechChunks,
   canResumeCheckpoint,
+  canStartRecognition,
   canTransition,
   desktopWebCapabilities,
   fingerprintKey,
@@ -261,6 +265,18 @@ describe("манифест VAD", () => {
       files: [{ path: "silero_vad.onnx", size: 900_000, sha256: HASH }],
     })
     assert.doesNotThrow(() => assertManifest(withVad))
+  })
+})
+
+describe("память D3", () => {
+  it("запрещает старт ниже 600 МБ", () => {
+    assert.equal(canStartRecognition(MIN_FREE_MEMORY_BYTES), true)
+    assert.equal(canStartRecognition(MIN_FREE_MEMORY_BYTES - 1), false)
+    assert.throws(
+      () => assertCanStartRecognition(100 * 1024 * 1024),
+      (error: unknown) =>
+        error instanceof MemoryError && /Не хватает памяти/.test(error.message),
+    )
   })
 })
 

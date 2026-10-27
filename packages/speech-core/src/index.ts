@@ -3,6 +3,7 @@ export {
   LIBRARY_VERSION,
   MAX_CHUNK_SAMPLES,
   MAX_CHUNK_SEC,
+  MIN_FREE_MEMORY_BYTES,
   OPUS_BITRATE_BPS,
   OPUS_FRAME_SAMPLES,
   OVERLAP_SAMPLES,
@@ -41,6 +42,11 @@ export {
 export type { CheckpointIdentity, VadCommit } from "./checkpoint.ts"
 export { stitchByTokenCenters } from "./stitch.ts"
 export type { ChunkTranscript, TimedToken } from "./stitch.ts"
+export {
+  MemoryError,
+  assertCanStartRecognition,
+  canStartRecognition,
+} from "./memory.ts"
 export type {
   AudioSource,
   FileSource,
