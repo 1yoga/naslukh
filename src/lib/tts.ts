@@ -7,11 +7,10 @@ let engine: PiperWebEngine | null = null
 
 function getEngine(): PiperWebEngine {
   if (engine) return engine
-  const cores = navigator.hardwareConcurrency || 2
+  // The threaded worker inside the bundled ONNX runtime crashes (`gD is not a function`).
+  // One thread still synthesizes faster than realtime and keeps the wasm file we ship.
   engine = new PiperWebEngine({
-    onnxRuntime: new OnnxWebRuntime({
-      numThreads: self.crossOriginIsolated ? Math.min(4, cores) : 1,
-    }),
+    onnxRuntime: new OnnxWebRuntime({ numThreads: 1 }),
   })
   return engine
 }

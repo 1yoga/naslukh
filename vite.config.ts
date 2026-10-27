@@ -10,6 +10,9 @@ const isolation = {
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  optimizeDeps: {
+    exclude: ['piper-tts-web', 'onnxruntime-web', '@huggingface/transformers'],
+  },
   resolve: {
     alias: {
       '@': path.resolve(import.meta.dirname, './src'),

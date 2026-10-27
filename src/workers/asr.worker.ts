@@ -38,8 +38,7 @@ function configureRuntime() {
   const wasm = env.backends.onnx?.wasm
   if (!wasm) return
   wasm.wasmPaths = `${self.location.origin}/asr-wasm/`
-  const cores = navigator.hardwareConcurrency || 2
-  wasm.numThreads = self.crossOriginIsolated ? Math.min(4, cores) : 1
+  wasm.numThreads = 1
 }
 
 async function loadModel() {

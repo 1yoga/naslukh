@@ -265,7 +265,12 @@ export default function App() {
               </label>
             </div>
 
-            {asrPhase === 'loading' && <Meter progress={asrProgress?.progress ?? null} label={asrLabel} />}
+            {(asrPhase === 'loading' || asrPhase === 'working') && (
+              <Meter
+                progress={asrPhase === 'working' ? null : (asrProgress?.progress ?? null)}
+                label={asrPhase === 'working' ? 'Считаю расшифровку на этом устройстве' : asrLabel}
+              />
+            )}
 
             {listenError && (
               <p className="rounded-lg border border-destructive/40 bg-card px-4 py-3 text-sm text-destructive" role="alert">

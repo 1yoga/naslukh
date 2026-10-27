@@ -26,8 +26,16 @@ const copies = [
     'public/asr-wasm/ort-wasm-simd-threaded.wasm',
   ],
   [
+    'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs',
+    'public/asr-wasm/ort-wasm-simd-threaded.mjs',
+  ],
+  [
     'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.wasm',
     'public/asr-wasm/ort-wasm-simd-threaded.jsep.wasm',
+  ],
+  [
+    'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.mjs',
+    'public/asr-wasm/ort-wasm-simd-threaded.jsep.mjs',
   ],
 ]
 
