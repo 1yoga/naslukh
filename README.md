@@ -2,7 +2,7 @@
 
 Веб-срез распознавания и озвучки русской речи **на устройстве**. Звук и текст не отправляются на сервер: модели считаются в браузере через WebAssembly.
 
-Это демонстрация принципа, а не магазинная сборка iOS и Android. Контракт — [`packages/speech-core`](packages/speech-core), чекпоинт SQLite — [`packages/speech-store`](packages/speech-store), Opus — [`packages/speech-audio`](packages/speech-audio), Silero — [`packages/speech-vad`](packages/speech-vad), GigaAM — [`packages/speech-asr`](packages/speech-asr). Решения — в [`docs/decisions.md`](docs/decisions.md). Первая поставка библиотеки транскрибирует русскую речь на устройстве. Озвучка в контракт пока не входит: слот в манифесте пустой.
+Это демонстрация принципа, а не магазинная сборка iOS и Android. Контракт — [`packages/speech-core`](packages/speech-core), чекпоинт SQLite — [`packages/speech-store`](packages/speech-store), Opus — [`packages/speech-audio`](packages/speech-audio), Silero — [`packages/speech-vad`](packages/speech-vad), GigaAM — [`packages/speech-asr`](packages/speech-asr), проба WASM — [`packages/speech-web`](packages/speech-web). Решения — в [`docs/decisions.md`](docs/decisions.md). Первая поставка библиотеки транскрибирует русскую речь на устройстве. Озвучка в контракт пока не входит: слот в манифесте пустой.
 
 ## Запуск
 

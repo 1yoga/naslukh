@@ -21,7 +21,10 @@
     "test:speech-asr": "npm test --prefix packages/speech-asr",
     "asr:file": "npm run run-file --prefix packages/speech-asr --",
     "typecheck:speech-audio": "tsc -p packages/speech-audio --noEmit",
-    "test:speech-audio": "npm test --prefix packages/speech-audio"
+    "test:speech-audio": "npm test --prefix packages/speech-audio",
+    "typecheck:speech-web": "tsc -p packages/speech-web --noEmit",
+    "test:speech-web": "npm test --prefix packages/speech-web",
+    "wasm:probe": "npm run probe --prefix packages/speech-web"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

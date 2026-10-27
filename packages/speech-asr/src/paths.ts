@@ -16,7 +16,7 @@ export const GIGAAM_TAR_URL =
   "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16.tar.bz2"
 
 export const GIGAAM_MODEL_ID = "gigaam-v3-e2e-rnnt-int8"
-export const GIGAAM_FEATURE_DIM = 64
+export { GIGAAM_FEATURE_DIM } from "../../speech-core/src/index.ts"
 
 export function ensureCacheDirs(): void {
   mkdirSync(MODEL_DIR, { recursive: true })

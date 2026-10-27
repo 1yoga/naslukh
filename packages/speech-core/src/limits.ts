@@ -47,6 +47,12 @@ export const OPUS_FRAME_SAMPLES = 320
  */
 export const MIN_FREE_MEMORY_BYTES = 600 * 1024 * 1024
 
+/** Бюджет пробы WASM после загрузки модели (D10). */
+export const WASM_PROBE_SEC = 30
+
+/** feature_dim GigaAM v3 e2e RNN-T. */
+export const GIGAAM_FEATURE_DIM = 64
+
 /** Меняется, когда меняется запись чекпоинта на диске. */
 export const CHECKPOINT_FORMAT = 1
 
