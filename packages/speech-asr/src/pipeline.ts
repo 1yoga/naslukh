@@ -4,7 +4,7 @@ import { listSegments } from "../../speech-store/src/index.ts"
 import type { SqlDatabase } from "../../speech-store/src/index.ts"
 import { GIGAAM_MODEL_ID } from "./paths.ts"
 import { runAsrSamples } from "./run-file.ts"
-import type { AsrFileResult } from "./run-file.ts"
+import type { AsrFileResult, AsrRunHooks } from "./run-file.ts"
 
 export interface RunImportPipelineOptions {
   wavPath: string
@@ -19,6 +19,7 @@ export interface RunImportPipelineOptions {
     osName: string
     osVersion: string
   }
+  hooks?: AsrRunHooks
 }
 
 export interface ImportPipelineResult extends AsrFileResult {
@@ -49,6 +50,21 @@ export async function runImportPipeline(
   // Повторный импорт уже мог быть распознан.
   if (imported.reused && imported.job.state === "done") {
     const segments = listSegments(options.db, imported.job.id)
+    options.hooks?.onState?.("done")
+    for (const segment of segments) {
+      options.hooks?.onSegment?.({
+        startSample: segment.startSample,
+        endSample: segment.endSample,
+        text: segment.text,
+        status: segment.status,
+        modelVersion: segment.modelVersion,
+      })
+    }
+    options.hooks?.onProgress?.({
+      processedSamples: 1,
+      totalSamples: 1,
+      state: "done",
+    })
     return {
       jobId: imported.job.id,
       text: segments.map((segment) => segment.text).join(""),
@@ -71,6 +87,7 @@ export async function runImportPipeline(
     audioPath,
     freeMemoryBytes: options.freeMemoryBytes,
     device: options.device,
+    hooks: options.hooks,
   })
 
   return {

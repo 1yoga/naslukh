@@ -6,7 +6,12 @@ import {
   buildSpeechChunks,
   stitchByTokenCenters,
 } from "../../speech-core/src/index.ts"
-import type { ChunkTranscript } from "../../speech-core/src/index.ts"
+import type {
+  ChunkTranscript,
+  JobState,
+  Progress,
+  Segment,
+} from "../../speech-core/src/index.ts"
 import {
   commitSegment,
   createJob,
@@ -28,6 +33,12 @@ import { runVadSamples } from "../../speech-vad/src/run-file.ts"
 import { GIGAAM_MODEL_ID } from "./paths.ts"
 import { createGigaamRecognizer } from "./recognize.ts"
 
+export interface AsrRunHooks {
+  onState?: (state: JobState) => void
+  onProgress?: (progress: Progress) => void
+  onSegment?: (segment: Segment) => void
+}
+
 export interface RunAsrSamplesOptions {
   samples: Float32Array
   modelDir: string
@@ -43,6 +54,7 @@ export interface RunAsrSamplesOptions {
     osName: string
     osVersion: string
   }
+  hooks?: AsrRunHooks
 }
 
 export type RunAsrFileOptions = Omit<
@@ -73,6 +85,7 @@ export function runAsrSamples(options: RunAsrSamplesOptions): AsrFileResult {
   assertCanStartRecognition(options.freeMemoryBytes ?? freemem())
   const jobId = options.jobId ?? `asr-${Date.now()}`
 
+  const hooks = options.hooks
   if (options.existingJob) {
     const job = getJob(options.db, jobId)
     if (job.state === "queued" || job.state === "sealed" || job.state === "paused") {
@@ -88,6 +101,12 @@ export function runAsrSamples(options: RunAsrSamplesOptions): AsrFileResult {
     })
     setJobState(options.db, jobId, "recognizing", "resume", device)
   }
+  hooks?.onState?.("recognizing")
+  hooks?.onProgress?.({
+    processedSamples: 0,
+    totalSamples: options.samples.length,
+    state: "recognizing",
+  })
 
   runVadSamples({
     samples: options.samples,
@@ -114,7 +133,7 @@ export function runAsrSamples(options: RunAsrSamplesOptions): AsrFileResult {
       const slice = options.samples.subarray(chunk.startSample, chunk.endSample)
       const transcript = recognizer.decodeChunk(chunk, slice)
       transcripts.push(transcript)
-      commitSegment(options.db, {
+      const stored = commitSegment(options.db, {
         jobId,
         startSample: chunk.startSample,
         endSample: chunk.endSample,
@@ -123,6 +142,18 @@ export function runAsrSamples(options: RunAsrSamplesOptions): AsrFileResult {
         modelVersion: GIGAAM_MODEL_ID,
         committedSample: chunk.endSample,
       })
+      hooks?.onSegment?.({
+        startSample: stored.startSample,
+        endSample: stored.endSample,
+        text: stored.text,
+        status: stored.status,
+        modelVersion: stored.modelVersion,
+      })
+      hooks?.onProgress?.({
+        processedSamples: chunk.endSample,
+        totalSamples: options.samples.length,
+        state: "recognizing",
+      })
     }
   } finally {
     recognizer.close()
@@ -130,6 +161,12 @@ export function runAsrSamples(options: RunAsrSamplesOptions): AsrFileResult {
 
   const text = stitchByTokenCenters(transcripts).text
   setJobState(options.db, jobId, "done", "complete", device)
+  hooks?.onState?.("done")
+  hooks?.onProgress?.({
+    processedSamples: options.samples.length,
+    totalSamples: options.samples.length,
+    state: "done",
+  })
   return {
     jobId,
     text,

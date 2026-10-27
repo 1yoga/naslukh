@@ -16,6 +16,9 @@ export type {
   ImportPipelineResult,
   RunImportPipelineOptions,
 } from "./pipeline.ts"
+export { createNodeEngine, engineAudioPath } from "./engine.ts"
+export type { NodeEngineOptions } from "./engine.ts"
+export type { AsrRunHooks } from "./run-file.ts"
 export {
   GIGAAM_DIR,
   GIGAAM_FEATURE_DIM,
