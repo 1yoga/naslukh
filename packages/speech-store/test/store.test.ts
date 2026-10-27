@@ -8,8 +8,10 @@ import {
   planVadCommit,
 } from "../../speech-core/src/index.ts"
 import {
+  commitSegment,
   commitVad,
   createJob,
+  listSegments,
   listVadIntervals,
   migrate,
   resumeVadJob,
@@ -141,6 +143,34 @@ describe("speech-store", () => {
         () => resumeVadJob(db, "job-3", "other-model"),
         /другая модель или версия пайплайна/,
       )
+    } finally {
+      db.close()
+    }
+  })
+
+  it("пишет сегмент вместе с курсором распознавания", () => {
+    const db = openNodeSqlite()
+    try {
+      migrate(db)
+      createJob(db, {
+        id: "job-4",
+        source: "file",
+        modelId: MODEL,
+        modelVersion: MODEL,
+      })
+      setJobState(db, "job-4", "recognizing", "resume", DEVICE)
+      commitSegment(db, {
+        jobId: "job-4",
+        startSample: 0,
+        endSample: 16_000,
+        text: "привет",
+        status: "done",
+        modelVersion: MODEL,
+        committedSample: 16_000,
+      })
+      const job = resumeVadJob(db, "job-4", MODEL)
+      assert.equal(job.lastCommittedSample, 16_000)
+      assert.equal(listSegments(db, "job-4")[0].text, "привет")
     } finally {
       db.close()
     }

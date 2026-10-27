@@ -31,6 +31,9 @@ export interface RunVadFileOptions {
   modelPath: string
   db: SqlDatabase
   jobId?: string
+  /** Версия модели в задании (по умолчанию Silero). */
+  modelId?: string
+  modelVersion?: string
   /** Продолжить существующее задание с курсора. */
   resume?: boolean
   device?: {
@@ -76,16 +79,18 @@ export function runVadFile(options: RunVadFileOptions): VadFileResult {
 
   migrate(options.db)
   const jobId = options.jobId ?? `vad-${Date.now()}`
+  const modelId = options.modelId ?? SILERO_MODEL_ID
+  const modelVersion = options.modelVersion ?? SILERO_MODEL_ID
 
   let job
   if (options.resume) {
-    job = resumeVadJob(options.db, jobId, SILERO_MODEL_ID)
+    job = resumeVadJob(options.db, jobId, modelVersion)
   } else {
     createJob(options.db, {
       id: jobId,
       source: "file",
-      modelId: SILERO_MODEL_ID,
-      modelVersion: SILERO_MODEL_ID,
+      modelId,
+      modelVersion,
       audioPath: options.wavPath,
     })
     job = setJobState(options.db, jobId, "recognizing", "resume", device)
@@ -105,7 +110,7 @@ export function runVadFile(options: RunVadFileOptions): VadFileResult {
   for (let pos = 0; pos + WINDOW <= samples.length; pos += WINDOW) {
     vad.acceptWaveform(samples.subarray(pos, pos + WINDOW))
     scanned = cursor + pos + WINDOW
-    drain(vad, pending, offset)
+    drain(vad, pending, offset, wave.samples.length)
     const batch = planVadCommit({
       scannedSample: scanned,
       lastCommittedSample: lastCommitted,
@@ -133,7 +138,7 @@ export function runVadFile(options: RunVadFileOptions): VadFileResult {
   }
   vad.flush()
   scanned = wave.samples.length
-  drain(vad, pending, offset)
+  drain(vad, pending, offset, wave.samples.length)
 
   const finalBatch = planVadCommit({
     scannedSample: scanned,
@@ -165,12 +170,15 @@ function drain(
   vad: { isEmpty: () => boolean; front: () => { start: number; samples: Float32Array }; pop: () => void },
   pending: SampleRange[],
   offset: number,
+  totalSamples: number,
 ): void {
   while (!vad.isEmpty()) {
     const segment = vad.front()
     vad.pop()
-    const startSample = offset + segment.start
-    const endSample = startSample + segment.samples.length
-    pending.push({ startSample, endSample })
+    const startSample = Math.min(offset + segment.start, totalSamples)
+    const endSample = Math.min(startSample + segment.samples.length, totalSamples)
+    if (endSample > startSample) {
+      pending.push({ startSample, endSample })
+    }
   }
 }

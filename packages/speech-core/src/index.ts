@@ -37,6 +37,8 @@ export {
   shouldCommitVad,
 } from "./checkpoint.ts"
 export type { CheckpointIdentity, VadCommit } from "./checkpoint.ts"
+export { stitchByTokenCenters } from "./stitch.ts"
+export type { ChunkTranscript, TimedToken } from "./stitch.ts"
 export type {
   AudioSource,
   FileSource,

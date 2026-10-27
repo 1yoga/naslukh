@@ -16,7 +16,10 @@
     "test:speech-store": "npm test --prefix packages/speech-store",
     "typecheck:speech-vad": "tsc -p packages/speech-vad --noEmit",
     "test:speech-vad": "npm test --prefix packages/speech-vad",
-    "vad:file": "npm run run-file --prefix packages/speech-vad --"
+    "vad:file": "npm run run-file --prefix packages/speech-vad --",
+    "typecheck:speech-asr": "tsc -p packages/speech-asr --noEmit",
+    "test:speech-asr": "npm test --prefix packages/speech-asr",
+    "asr:file": "npm run run-file --prefix packages/speech-asr --"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

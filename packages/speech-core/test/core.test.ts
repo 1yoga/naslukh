@@ -21,6 +21,7 @@ import {
   phoneWebCapabilities,
   planVadCommit,
   splitLongSpeech,
+  stitchByTokenCenters,
   unavailableCapabilities,
   werGapPoints,
   wordErrorRate,
@@ -260,5 +261,34 @@ describe("манифест VAD", () => {
       files: [{ path: "silero_vad.onnx", size: 900_000, sha256: HASH }],
     })
     assert.doesNotThrow(() => assertManifest(withVad))
+  })
+})
+
+describe("склейка по центрам токенов", () => {
+  it("в перехлёсте режет по середине зоны", () => {
+    const sr = SAMPLE_RATE_HZ
+    const left = {
+      startSample: 0,
+      endSample: 10 * sr,
+      tokens: [
+        { token: "а", centerSec: 1 },
+        { token: "б", centerSec: 8 },
+        { token: "в", centerSec: 9.5 },
+      ],
+    }
+    const right = {
+      startSample: 8 * sr,
+      endSample: 18 * sr,
+      tokens: [
+        { token: "г", centerSec: 0.5 },
+        { token: "д", centerSec: 2 },
+        { token: "е", centerSec: 5 },
+      ],
+    }
+    // Перехлёст [8с, 10с], середина 9с.
+    // Слева остаются а(1), б(8); в(9.5) отбрасывается.
+    // Справа: г abs=8.5 < 9 отброс; д abs=10 и е abs=13 берутся.
+    const stitched = stitchByTokenCenters([left, right])
+    assert.equal(stitched.text, "абде")
   })
 })

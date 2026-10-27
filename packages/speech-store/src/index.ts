@@ -7,6 +7,15 @@ export {
   resumeVadJob,
   setJobState,
 } from "./jobs.ts"
+export {
+  commitSegment,
+  listSegments,
+  pendingChunkStart,
+} from "./segments.ts"
+export type {
+  SegmentCommitInput,
+  StoredSegment,
+} from "./segments.ts"
 export type {
   CreateJobInput,
   JobRow,
