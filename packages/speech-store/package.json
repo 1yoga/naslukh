@@ -1,0 +1,14 @@
+{
+  "name": "@naslukh/speech-store",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SQLite-чекпоинт заданий Наслух: миграция, курсор VAD, продолжение после сбоя.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-strip-types --experimental-sqlite --test test/*.test.ts"
+  }
+}
