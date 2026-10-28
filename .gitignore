@@ -16,6 +16,16 @@ public/onnx
 public/piper
 public/asr-wasm
 
+# Android / Gradle (RN packages, e.g. speech-rn)
+**/android/build/
+**/android/.cxx/
+**/android/.gradle/
+**/android/local.properties
+*.apk
+*.aab
+*.dex
+*.hprof
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
