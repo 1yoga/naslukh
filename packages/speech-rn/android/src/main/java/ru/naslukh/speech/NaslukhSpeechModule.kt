@@ -62,6 +62,7 @@ class NaslukhSpeechModule : Module() {
       mapOf(
         "text" to result.text,
         "durationMs" to result.durationMs,
+        "audioUri" to result.audioUri,
         "segments" to listOf(
           mapOf(
             "startSample" to result.segment.startSample,

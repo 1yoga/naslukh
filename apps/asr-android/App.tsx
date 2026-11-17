@@ -44,6 +44,7 @@ const REC_OPTIONS = {
   ...RecordingPresets.HIGH_QUALITY,
   isMeteringEnabled: true,
 }
+const LISTEN_TIMING_PREFIX = "listenOnceTiming:"
 
 type ProgressState = {
   visible: boolean
@@ -52,17 +53,33 @@ type ProgressState = {
   message: string
 }
 
+type ListenTiming = {
+  microphonePreparationMs: number
+  firstAudioReadMs: number
+  speechStartDetectionMs: number
+  utteranceEndDetectionMs: number | null
+  trailingSilenceMs: number | null
+  recognizerCreationMs: number
+  recognitionMs: number
+  endToTextMs: number
+  endReason: "vad" | "stop" | "limit"
+}
+
 export default function App() {
   useKeepAwake()
 
   const recorder = useAudioRecorder(REC_OPTIONS)
   const recorderState = useAudioRecorderState(recorder, 80)
   const [uri, setUri] = useState<string | null>(null)
+  const [rawInputUri, setRawInputUri] = useState<string | null>(null)
   const [status, setStatus] = useState("Готово к работе")
   const [text, setText] = useState("")
   const [rawText, setRawText] = useState("")
   const [busy, setBusy] = useState(false)
   const [listening, setListening] = useState(false)
+  const [listenTiming, setListenTiming] = useState<ListenTiming | null>(null)
+  const [buttonToMicMs, setButtonToMicMs] = useState<number | null>(null)
+  const listenButtonAtRef = useRef<number | null>(null)
   const [screen, setScreen] = useState<"main" | "settings">("main")
   const [settings, setSettings] = useState<StandSettings>(DEFAULT_SETTINGS)
   const [hotwordDraft, setHotwordDraft] = useState("")
@@ -77,6 +94,8 @@ export default function App() {
 
   const player = useAudioPlayer(uri)
   const playerStatus = useAudioPlayerStatus(player)
+  const rawInputPlayer = useAudioPlayer(rawInputUri)
+  const rawInputStatus = useAudioPlayerStatus(rawInputPlayer)
 
   useEffect(() => {
     void loadSettings().then(setSettings)
@@ -84,6 +103,20 @@ export default function App() {
 
   useEffect(() => {
     return addNaslukhProgressListener((e) => {
+      if (e.message.startsWith(LISTEN_TIMING_PREFIX)) {
+        try {
+          setListenTiming(JSON.parse(e.message.slice(LISTEN_TIMING_PREFIX.length)) as ListenTiming)
+        } catch {
+          console.warn("Некорректные замеры listenOnce", e.message)
+        }
+        return
+      }
+      if (e.phase === "listen" && e.message === "Слушаем…" && listenButtonAtRef.current !== null) {
+        const elapsedMs = Math.round(performance.now() - listenButtonAtRef.current)
+        listenButtonAtRef.current = null
+        setButtonToMicMs(elapsedMs)
+        console.info(`[NaslukhTiming] buttonToMicReadyMs=${elapsedMs}`)
+      }
       setProgress({
         visible: true,
         phase: e.phase,
@@ -172,15 +205,21 @@ export default function App() {
 
   async function startListenOnce() {
     if (busy || recorderState.isRecording) return
+    listenButtonAtRef.current = performance.now()
+    setListenTiming(null)
+    setButtonToMicMs(null)
     if (playerStatus.playing) player.pause()
+    if (rawInputStatus.playing) rawInputPlayer.pause()
     const perm = await requestRecordingPermissionsAsync()
     if (!perm.granted) {
+      listenButtonAtRef.current = null
       setStatus("Нужен доступ к микрофону")
       return
     }
     const s = settingsRef.current
     setBusy(true)
     setUri(null)
+    setRawInputUri(null)
     setText("")
     setRawText("")
     setProgress({
@@ -194,22 +233,26 @@ export default function App() {
       setStatus("Проверка модели…")
       await engine.ensureModel(GIGAAM_MODEL_ID)
       setListening(true)
-      setStatus("Слушаем фразу…")
+      setStatus("Подготовка микрофона…")
       const result = await engine.listenOnce({
         language: "ru",
-        vadThreshold: s.vadThreshold,
+        vadThreshold: s.listenVadThreshold,
         vadMinSpeechSec: s.vadMinSpeechSec,
-        vadMinSilenceSec: s.vadMinSilenceSec,
+        vadMinSilenceSec: s.listenEndSilenceSec,
         numThreads: s.numThreads,
         hotwords: s.hotwords,
         correctorEnabled: s.correctorEnabled,
         brandMinScore: s.brandMinScore,
+        saveAudio: true,
       })
+      setUri(result.audioUri ?? null)
+      setRawInputUri(new File(Paths.cache, "naslukh-pre-vad.wav").uri)
       presentResult(result, s)
       setStatus(`Готово · фраза ${(result.durationMs / 1000).toFixed(1)} с`)
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e))
     } finally {
+      listenButtonAtRef.current = null
       setListening(false)
       setBusy(false)
       setProgress((p) => ({ ...p, visible: false, progress: 1 }))
@@ -287,6 +330,7 @@ export default function App() {
       setStatus("Пауза")
       return
     }
+    if (rawInputStatus.playing) rawInputPlayer.pause()
     await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true })
     if (
       playerStatus.didJustFinish ||
@@ -296,6 +340,22 @@ export default function App() {
     }
     player.play()
     setStatus("Слушаем…")
+  }
+
+  async function toggleRawInput() {
+    if (!rawInputUri) return
+    if (rawInputStatus.playing) {
+      rawInputPlayer.pause()
+      setStatus("Пауза входа")
+      return
+    }
+    if (playerStatus.playing) player.pause()
+    await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true })
+    if (rawInputStatus.didJustFinish || rawInputStatus.currentTime >= rawInputStatus.duration) {
+      await rawInputPlayer.seekTo(0)
+    }
+    rawInputPlayer.play()
+    setStatus("Слушаем звук до VAD…")
   }
 
   function addHotword() {
@@ -415,8 +475,8 @@ export default function App() {
             громкую речь.
           </Hint>
           <NumCard
-            title="Порог чувствительности"
-            hint="0.05…0.90. Меньше = чувствительнее (больше фона в ASR)."
+            title="Порог для файла"
+            hint="0.05…0.90. Меньше = чувствительнее при распознавании файла."
             value={settings.vadThreshold.toFixed(2)}
             onMinus={() =>
               void patchSettings({
@@ -428,6 +488,23 @@ export default function App() {
               void patchSettings({
                 ...settings,
                 vadThreshold: Math.min(0.9, +(settings.vadThreshold + 0.05).toFixed(2)),
+              })
+            }
+          />
+          <NumCard
+            title="Порог для Фразы"
+            hint="Низкий порог может принимать фоновый шум за продолжение речи."
+            value={settings.listenVadThreshold.toFixed(2)}
+            onMinus={() =>
+              void patchSettings({
+                ...settings,
+                listenVadThreshold: Math.max(0.05, +(settings.listenVadThreshold - 0.05).toFixed(2)),
+              })
+            }
+            onPlus={() =>
+              void patchSettings({
+                ...settings,
+                listenVadThreshold: Math.min(0.9, +(settings.listenVadThreshold + 0.05).toFixed(2)),
               })
             }
           />
@@ -449,8 +526,25 @@ export default function App() {
             }
           />
           <NumCard
-            title="Мин. тишина для разреза"
-            hint="Пауза дольше этого — конец фразы. Меньше = чаще режет на куски."
+            title="Тишина до конца фразы"
+            hint="Для кнопки «Фраза»: короткие паузы остаются внутри одной реплики."
+            value={`${settings.listenEndSilenceSec.toFixed(2)} с`}
+            onMinus={() =>
+              void patchSettings({
+                ...settings,
+                listenEndSilenceSec: Math.max(0.3, +(settings.listenEndSilenceSec - 0.1).toFixed(2)),
+              })
+            }
+            onPlus={() =>
+              void patchSettings({
+                ...settings,
+                listenEndSilenceSec: Math.min(3, +(settings.listenEndSilenceSec + 0.1).toFixed(2)),
+              })
+            }
+          />
+          <NumCard
+            title="Мин. тишина для файла"
+            hint="При распознавании файла пауза дольше этого разделяет сегменты."
             value={`${settings.vadMinSilenceSec.toFixed(2)} с`}
             onMinus={() =>
               void patchSettings({
@@ -571,6 +665,11 @@ export default function App() {
           disabled={busy || recording || !uri}
         />
         <Action
+          label={rawInputStatus.playing ? "Пауза входа" : "Слушать вход"}
+          onPress={toggleRawInput}
+          disabled={busy || recording || !rawInputUri}
+        />
+        <Action
           label="Распознать"
           onPress={() =>
             uri ? void transcribeUri(uri) : setStatus("Сначала запись или файл")
@@ -608,6 +707,27 @@ export default function App() {
           ) : null}
         </View>
       )}
+
+      {listenTiming ? (
+        <View style={styles.statusCard}>
+          <Text style={styles.statusLabel}>
+            Замеры «Фразы» · {listenTiming.endReason === "vad" ? "VAD" : listenTiming.endReason === "stop" ? "вручную" : "лимит"}
+          </Text>
+          {buttonToMicMs !== null ? (
+            <Text style={styles.timingLine}>Кнопка → «Слушаем»: {buttonToMicMs} мс</Text>
+          ) : null}
+          <Text style={styles.timingLine}>Подготовка микрофона (native): {listenTiming.microphonePreparationMs} мс</Text>
+          <Text style={styles.timingLine}>Первый PCM после старта: {listenTiming.firstAudioReadMs} мс</Text>
+          <Text style={styles.timingLine}>Микрофон → начало речи (VAD): {listenTiming.speechStartDetectionMs} мс</Text>
+          <Text style={styles.timingLine}>Начало речи → конец (VAD): {listenTiming.utteranceEndDetectionMs === null ? "—" : `${listenTiming.utteranceEndDetectionMs} мс`}</Text>
+          <Text style={styles.timingLine}>Тишина перед завершением: {listenTiming.trailingSilenceMs === null ? "—" : `${listenTiming.trailingSilenceMs} мс`}</Text>
+          <Text style={styles.timingLine}>Создание GigaAM: {listenTiming.recognizerCreationMs} мс</Text>
+          <Text style={styles.timingLine}>Распознавание: {listenTiming.recognitionMs} мс</Text>
+          <Text style={styles.timingLine}>Остановка записи → текст GigaAM: {listenTiming.endToTextMs} мс</Text>
+          <Text style={styles.muted}>Отсчёты VAD включают ожидание речи и длительность фразы.</Text>
+          {rawInputUri ? <Text style={styles.muted}>«Слушать вход» — звук от старта микрофона до первого срабатывания VAD.</Text> : null}
+        </View>
+      ) : null}
 
       <View style={styles.transcript}>
         <View style={styles.transcriptHead}>
@@ -882,6 +1002,7 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   muted: { fontSize: 12, color: "#7A8B96", marginTop: 2 },
+  timingLine: { fontSize: 13, color: "#12323A", lineHeight: 18 },
   track: {
     height: 10,
     borderRadius: 999,

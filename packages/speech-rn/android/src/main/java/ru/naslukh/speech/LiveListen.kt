@@ -7,14 +7,24 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.net.Uri
 import android.os.SystemClock
+import android.util.Log
 import com.k2fsa.sherpa.onnx.SileroVadModelConfig
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import org.json.JSONObject
+import kotlin.math.abs
+import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * Один локальный turn-taking цикл: AudioRecord → Silero VAD → GigaAM.
@@ -26,34 +36,42 @@ object LiveListen {
   private const val PRE_ROLL_PAD_SEC = 0.3f
   private const val DEFAULT_START_TIMEOUT_SEC = 15f
   private const val DEFAULT_MAX_DURATION_SEC = 30f
+  private const val DEFAULT_END_SILENCE_SEC = 1f
   private const val MIN_UTTERANCE_SEC = 0.08f
   private const val CANCELLED_MESSAGE = "Прослушивание отменено"
+  private const val TIMING_TAG = "NaslukhTiming"
+  private const val TIMING_PREFIX = "listenOnceTiming:"
+  private const val INPUT_TAG = "NaslukhInput"
+  private const val PRE_VAD_CAPTURE_SAMPLES = 10 * SAMPLE_RATE
 
   private val active = AtomicReference<Session?>(null)
 
   data class Options(
-    val vadThreshold: Float = 0.15f,
+    val vadThreshold: Float = 0.5f,
     val vadMinSpeechSec: Float = 0.25f,
-    val vadMinSilenceSec: Float = 0.25f,
+    val vadMinSilenceSec: Float = DEFAULT_END_SILENCE_SEC,
     val numThreads: Int = 2,
     val startTimeoutSec: Float = DEFAULT_START_TIMEOUT_SEC,
     val maxDurationSec: Float = DEFAULT_MAX_DURATION_SEC,
+    val saveAudio: Boolean = false,
   ) {
     companion object {
       fun fromMap(raw: Map<String, Any?>?): Options {
         if (raw == null) return Options()
         return Options(
-          vadThreshold = ((raw["vadThreshold"] as? Number)?.toFloat() ?: 0.15f)
+          vadThreshold = ((raw["vadThreshold"] as? Number)?.toFloat() ?: 0.5f)
             .coerceIn(0.01f, 0.99f),
           vadMinSpeechSec = ((raw["vadMinSpeechSec"] as? Number)?.toFloat() ?: 0.25f)
             .coerceIn(0.05f, 2f),
-          vadMinSilenceSec = ((raw["vadMinSilenceSec"] as? Number)?.toFloat() ?: 0.25f)
+          vadMinSilenceSec = ((raw["vadMinSilenceSec"] as? Number)?.toFloat()
+            ?: DEFAULT_END_SILENCE_SEC)
             .coerceIn(0.05f, 3f),
           numThreads = ((raw["numThreads"] as? Number)?.toInt() ?: 2).coerceIn(1, 4),
           startTimeoutSec = ((raw["startTimeoutSec"] as? Number)?.toFloat()
             ?: DEFAULT_START_TIMEOUT_SEC).coerceIn(1f, 120f),
           maxDurationSec = ((raw["maxDurationSec"] as? Number)?.toFloat()
             ?: DEFAULT_MAX_DURATION_SEC).coerceIn(2f, 30f),
+          saveAudio = raw["saveAudio"] as? Boolean ?: false,
         )
       }
     }
@@ -63,6 +81,7 @@ object LiveListen {
     val text: String,
     val segment: AsrPipeline.SegmentOut,
     val durationMs: Long,
+    val audioUri: String?,
   )
 
   fun listenOnce(context: Context, options: Options = Options()): Result {
@@ -101,6 +120,7 @@ object LiveListen {
 
     @SuppressLint("MissingPermission")
     fun run(context: Context, options: Options): Result {
+      val nativeStartedAtNs = SystemClock.elapsedRealtimeNanos()
       checkPermission(context)
       Checkpoint.assertCanStart(freeMemoryBytes(context))
 
@@ -110,180 +130,272 @@ object LiveListen {
       }
 
       checkCancelled()
-      ProgressBus.send("asr", 0.1, "Загрузка GigaAM…")
-      val recognizer = AsrPipeline.createRecognizer(paths, options.numThreads)
-      try {
-        checkCancelled()
 
-        val minBufferBytes = AudioRecord.getMinBufferSize(
-          SAMPLE_RATE,
-          AudioFormat.CHANNEL_IN_MONO,
-          AudioFormat.ENCODING_PCM_16BIT,
+      val minBufferBytes = AudioRecord.getMinBufferSize(
+        SAMPLE_RATE,
+        AudioFormat.CHANNEL_IN_MONO,
+        AudioFormat.ENCODING_PCM_16BIT,
+      )
+      if (minBufferBytes <= 0) {
+        throw IllegalStateException("Устройство не поддерживает запись PCM 16 кГц")
+      }
+      val bufferBytes = maxOf(minBufferBytes, WINDOW * 2 * 4)
+      val audio = AudioRecord.Builder()
+        .setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+        .setAudioFormat(
+          AudioFormat.Builder()
+            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            .setSampleRate(SAMPLE_RATE)
+            .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+            .build(),
         )
-        if (minBufferBytes <= 0) {
-          throw IllegalStateException("Устройство не поддерживает запись PCM 16 кГц")
-        }
-        val bufferBytes = maxOf(minBufferBytes, WINDOW * 2 * 4)
-        val audio = AudioRecord.Builder()
-          .setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
-          .setAudioFormat(
-            AudioFormat.Builder()
-              .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-              .setSampleRate(SAMPLE_RATE)
-              .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-              .build(),
-          )
-          .setBufferSizeInBytes(bufferBytes)
-          .build()
-        recorder = audio
-        if (audio.state != AudioRecord.STATE_INITIALIZED) {
-          audio.release()
-          recorder = null
-          throw IllegalStateException("Не удалось открыть микрофон")
-        }
+        .setBufferSizeInBytes(bufferBytes)
+        .build()
+      recorder = audio
+      if (audio.state != AudioRecord.STATE_INITIALIZED) {
+        audio.release()
+        recorder = null
+        throw IllegalStateException("Не удалось открыть микрофон")
+      }
 
-        val samples = try {
-          checkCancelled()
-          val vad = Vad(
-            assetManager = null,
-            config = VadModelConfig(
-              sileroVadModelConfig = SileroVadModelConfig(
-                model = paths.silero.absolutePath,
-                threshold = options.vadThreshold,
-                minSilenceDuration = options.vadMinSilenceSec,
-                minSpeechDuration = options.vadMinSpeechSec,
-                windowSize = WINDOW,
-                maxSpeechDuration = options.maxDurationSec,
-              ),
-              sampleRate = SAMPLE_RATE,
-              numThreads = options.numThreads,
-              provider = "cpu",
+      var microphoneReadyAtNs = 0L
+      var speechDetectedAtNs = 0L
+      var vadEndDetectedAtNs = 0L
+      var recordingStoppedAtNs = 0L
+      var firstAudioReadAtNs = 0L
+      var trailingSilenceMs: Long? = null
+      val preVadCapture = if (options.saveAudio) SampleBuffer(PRE_VAD_CAPTURE_SAMPLES) else null
+      val samples = try {
+        checkCancelled()
+        val vad = Vad(
+          assetManager = null,
+          config = VadModelConfig(
+            sileroVadModelConfig = SileroVadModelConfig(
+              model = paths.silero.absolutePath,
+              threshold = options.vadThreshold,
+              minSilenceDuration = options.vadMinSilenceSec,
+              minSpeechDuration = options.vadMinSpeechSec,
+              windowSize = WINDOW,
+              maxSpeechDuration = options.maxDurationSec,
             ),
-          )
+            sampleRate = SAMPLE_RATE,
+            numThreads = options.numThreads,
+            provider = "cpu",
+          ),
+        )
 
-          val utterance = SampleBuffer((options.maxDurationSec * SAMPLE_RATE).toInt())
-          val preRoll = SampleRing(((options.vadMinSpeechSec + PRE_ROLL_PAD_SEC) * SAMPLE_RATE).toInt())
-          val readBuffer = ShortArray(WINDOW)
-          val pending = ShortArray(WINDOW)
-          val frame = FloatArray(WINDOW)
-          var pendingCount = 0
-          var speechStarted = false
-          var ended = false
-          var lastListenProgress = -1
-          val listenStartedAt = SystemClock.elapsedRealtime()
-          var speechStartedAt = listenStartedAt
+        val utterance = SampleBuffer((options.maxDurationSec * SAMPLE_RATE).toInt())
+        val preRoll = SampleRing(((options.vadMinSpeechSec + PRE_ROLL_PAD_SEC) * SAMPLE_RATE).toInt())
+        val readBuffer = ShortArray(WINDOW)
+        val pending = ShortArray(WINDOW)
+        val frame = FloatArray(WINDOW)
+        var pendingCount = 0
+        var speechStarted = false
+        var ended = false
+        var lastListenProgress = -1
+        val listenStartedAt = SystemClock.elapsedRealtime()
+        var speechStartedAt = listenStartedAt
+        var processedSamples = 0
+        var levelSamples = 0
+        var levelEnergy = 0.0
+        var levelPeak = 0.0f
 
-          fun processFrame(): Boolean {
-            preRoll.append(frame)
-            vad.acceptWaveform(frame)
-            val detected = vad.isSpeechDetected()
+        fun logInputLevel(reason: String) {
+          if (levelSamples == 0) return
+          val rms = sqrt(levelEnergy / levelSamples)
+          val rmsDb = (20.0 * log10(max(rms, 1e-7))).roundToInt()
+          val peakDb = (20.0 * log10(max(levelPeak.toDouble(), 1e-7))).roundToInt()
+          val sinceMicMs = (SystemClock.elapsedRealtimeNanos() - microphoneReadyAtNs) / 1_000_000
+          Log.i(INPUT_TAG, "preVad untilMs=$sinceMicMs rmsDbFS=$rmsDb peakDbFS=$peakDb reason=$reason")
+          levelSamples = 0
+          levelEnergy = 0.0
+          levelPeak = 0.0f
+        }
 
-            if (!speechStarted && detected) {
-              speechStarted = true
-              speechStartedAt = SystemClock.elapsedRealtime()
-              utterance.append(preRoll.snapshot())
-              ProgressBus.send("listen", 0.2, "Речь обнаружена")
-            } else if (speechStarted) {
-              utterance.append(frame)
-            }
+        fun processFrame(): Boolean {
+          preRoll.append(frame)
+          vad.acceptWaveform(frame)
+          val detected = vad.isSpeechDetected()
 
-            // Silero кладёт сегмент в очередь только после minSilenceDuration.
-            return speechStarted && !vad.empty()
+          if (!speechStarted && detected) {
+            speechStarted = true
+            speechDetectedAtNs = SystemClock.elapsedRealtimeNanos()
+            speechStartedAt = SystemClock.elapsedRealtime()
+            utterance.append(preRoll.snapshot())
+            ProgressBus.send("listen", 0.2, "Речь обнаружена")
+          } else if (speechStarted) {
+            utterance.append(frame)
           }
 
-          try {
-            checkCancelled()
-            if (!stopRequested.get()) {
-              audio.startRecording()
-              if (audio.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                throw IllegalStateException("Микрофон не начал запись")
-              }
+          // Silero кладёт сегмент в очередь только после minSilenceDuration.
+          return speechStarted && !vad.empty()
+        }
+
+        try {
+          checkCancelled()
+          if (!stopRequested.get()) {
+            audio.startRecording()
+            if (audio.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+              throw IllegalStateException("Микрофон не начал запись")
             }
-            ProgressBus.send("listen", 0.02, "Слушаем…")
+            microphoneReadyAtNs = SystemClock.elapsedRealtimeNanos()
+          }
+          ProgressBus.send("listen", 0.02, "Слушаем…")
 
-            while (!ended && !stopRequested.get()) {
+          while (!ended && !stopRequested.get()) {
+            checkCancelled()
+            val elapsedSec = (SystemClock.elapsedRealtime() - listenStartedAt) / 1000f
+            if (!speechStarted && elapsedSec >= options.startTimeoutSec) {
+              throw IllegalStateException("Речь не обнаружена за ${options.startTimeoutSec} с")
+            }
+            if (speechStarted &&
+                (SystemClock.elapsedRealtime() - speechStartedAt) / 1000f >= options.maxDurationSec) {
+              break
+            }
+
+            val count = try {
+              audio.read(readBuffer, 0, readBuffer.size, AudioRecord.READ_BLOCKING)
+            } catch (e: IllegalStateException) {
               checkCancelled()
-              val elapsedSec = (SystemClock.elapsedRealtime() - listenStartedAt) / 1000f
-              if (!speechStarted && elapsedSec >= options.startTimeoutSec) {
-                throw IllegalStateException("Речь не обнаружена за ${options.startTimeoutSec} с")
-              }
-              if (speechStarted &&
-                  (SystemClock.elapsedRealtime() - speechStartedAt) / 1000f >= options.maxDurationSec) {
-                break
-              }
-
-              val count = try {
-                audio.read(readBuffer, 0, readBuffer.size, AudioRecord.READ_BLOCKING)
-              } catch (e: IllegalStateException) {
-                checkCancelled()
-                if (stopRequested.get()) break
-                throw e
-              }
-              if (count < 0) {
-                checkCancelled()
-                if (stopRequested.get()) break
-                throw IllegalStateException("Ошибка чтения микрофона: $count")
-              }
-              if (count == 0) continue
-              var offset = 0
-              while (offset < count && !ended) {
-                val take = min(WINDOW - pendingCount, count - offset)
-                System.arraycopy(readBuffer, offset, pending, pendingCount, take)
-                pendingCount += take
-                offset += take
-                if (pendingCount == WINDOW) {
-                  for (i in 0 until WINDOW) frame[i] = pending[i] / 32768.0f
-                  pendingCount = 0
-                  ended = processFrame()
-                  val listenPct = if (speechStarted) {
-                    20 + (((SystemClock.elapsedRealtime() - speechStartedAt) /
-                      (options.maxDurationSec * 1000f)) * 60).toInt()
-                  } else {
-                    (((SystemClock.elapsedRealtime() - listenStartedAt) /
-                      (options.startTimeoutSec * 1000f)) * 15).toInt()
+              if (stopRequested.get()) break
+              throw e
+            }
+            if (count < 0) {
+              checkCancelled()
+              if (stopRequested.get()) break
+              throw IllegalStateException("Ошибка чтения микрофона: $count")
+            }
+            if (count == 0) continue
+            if (firstAudioReadAtNs == 0L) firstAudioReadAtNs = SystemClock.elapsedRealtimeNanos()
+            var offset = 0
+            while (offset < count && !ended) {
+              val take = min(WINDOW - pendingCount, count - offset)
+              System.arraycopy(readBuffer, offset, pending, pendingCount, take)
+              pendingCount += take
+              offset += take
+              if (pendingCount == WINDOW) {
+                for (i in 0 until WINDOW) frame[i] = pending[i] / 32768.0f
+                pendingCount = 0
+                processedSamples += WINDOW
+                if (!speechStarted && preVadCapture != null) {
+                  if (preVadCapture.size < PRE_VAD_CAPTURE_SAMPLES) preVadCapture.append(frame)
+                  for (sample in frame) {
+                    levelEnergy += sample.toDouble() * sample.toDouble()
+                    levelPeak = max(levelPeak, abs(sample))
                   }
-                  if (listenPct / 5 != lastListenProgress / 5) {
-                    lastListenProgress = listenPct
-                    ProgressBus.send(
-                      "listen",
-                      (listenPct / 100.0).coerceIn(0.02, 0.8),
-                      if (speechStarted) "Говори…" else "Слушаем…",
-                    )
-                  }
+                  levelSamples += WINDOW
+                  if (levelSamples >= SAMPLE_RATE / 2) logInputLevel("window")
+                }
+                ended = processFrame()
+                if (speechStarted && preVadCapture != null) logInputLevel("vadStart")
+                if (ended) {
+                  vadEndDetectedAtNs = SystemClock.elapsedRealtimeNanos()
+                  val segment = vad.front()
+                  val trailingSamples = (processedSamples.toLong() - segment.start.toLong() -
+                    segment.samples.size.toLong()).coerceAtLeast(0L)
+                  trailingSilenceMs = trailingSamples * 1000L / SAMPLE_RATE
+                }
+                val listenPct = if (speechStarted) {
+                  20 + (((SystemClock.elapsedRealtime() - speechStartedAt) /
+                    (options.maxDurationSec * 1000f)) * 60).toInt()
+                } else {
+                  (((SystemClock.elapsedRealtime() - listenStartedAt) /
+                    (options.startTimeoutSec * 1000f)) * 15).toInt()
+                }
+                if (listenPct / 5 != lastListenProgress / 5) {
+                  lastListenProgress = listenPct
+                  ProgressBus.send(
+                    "listen",
+                    (listenPct / 100.0).coerceIn(0.02, 0.8),
+                    if (speechStarted) "Говори…" else "Слушаем…",
+                  )
                 }
               }
             }
-
-            if (pendingCount > 0 && speechStarted) {
-              val tail = FloatArray(pendingCount) { i -> pending[i] / 32768.0f }
-              utterance.append(tail)
-            }
-            checkCancelled()
-            if (!speechStarted || utterance.size < (MIN_UTTERANCE_SEC * SAMPLE_RATE).toInt()) {
-              throw IllegalStateException("Речь слишком короткая")
-            }
-            utterance.toArray()
-          } finally {
-            vad.release()
           }
-        } finally {
-          close()
-        }
 
-        checkCancelled()
-        val durationMs = (samples.size * 1000L) / SAMPLE_RATE
+          if (pendingCount > 0 && speechStarted) {
+            val tail = FloatArray(pendingCount) { i -> pending[i] / 32768.0f }
+            utterance.append(tail)
+          }
+          checkCancelled()
+          if (!speechStarted || utterance.size < (MIN_UTTERANCE_SEC * SAMPLE_RATE).toInt()) {
+            throw IllegalStateException("Речь слишком короткая")
+          }
+          utterance.toArray()
+        } finally {
+          vad.release()
+        }
+      } finally {
+        close()
+        recordingStoppedAtNs = SystemClock.elapsedRealtimeNanos()
+      }
+
+      checkCancelled()
+      val durationMs = (samples.size * 1000L) / SAMPLE_RATE
+      ProgressBus.send("asr", 0.1, "Загрузка GigaAM…")
+      val recognizerStartedAtNs = SystemClock.elapsedRealtimeNanos()
+      val recognizer = AsrPipeline.createRecognizer(paths, options.numThreads)
+      val recognizerReadyAtNs = SystemClock.elapsedRealtimeNanos()
+      try {
         ProgressBus.send("asr", 0.35, "Распознаём фразу…")
+        val recognitionStartedAtNs = SystemClock.elapsedRealtimeNanos()
         val recognized = AsrPipeline.recognizeUtterance(
           recognizer = recognizer,
           samples = samples,
           isCancelled = { cancelled.get() },
         )
+        val textReadyAtNs = SystemClock.elapsedRealtimeNanos()
         checkCancelled()
+        val audioUri = if (options.saveAudio) writeWav(context, samples) else null
+        if (preVadCapture != null && preVadCapture.size > 0) {
+          val rawUri = writeWav(context, preVadCapture.toArray(), "naslukh-pre-vad.wav")
+          Log.i(INPUT_TAG, "preVadWav=$rawUri durationMs=${preVadCapture.size * 1000L / SAMPLE_RATE}")
+        }
+        checkCancelled()
+        val timing = JSONObject()
+          .put("microphonePreparationMs", (microphoneReadyAtNs - nativeStartedAtNs) / 1_000_000)
+          .put("firstAudioReadMs", (firstAudioReadAtNs - microphoneReadyAtNs) / 1_000_000)
+          .put("speechStartDetectionMs", (speechDetectedAtNs - microphoneReadyAtNs) / 1_000_000)
+          .put("utteranceEndDetectionMs", if (vadEndDetectedAtNs == 0L) JSONObject.NULL
+            else (vadEndDetectedAtNs - speechDetectedAtNs) / 1_000_000)
+          .put("trailingSilenceMs", trailingSilenceMs ?: JSONObject.NULL)
+          .put("recognizerCreationMs", (recognizerReadyAtNs - recognizerStartedAtNs) / 1_000_000)
+          .put("recognitionMs", (textReadyAtNs - recognitionStartedAtNs) / 1_000_000)
+          .put("endToTextMs", (textReadyAtNs - recordingStoppedAtNs) / 1_000_000)
+          .put("endReason", if (vadEndDetectedAtNs != 0L) "vad"
+            else if (stopRequested.get()) "stop" else "limit")
+          .toString()
+        Log.i(TIMING_TAG, "$TIMING_PREFIX$timing")
+        ProgressBus.send("asr", 1.0, "$TIMING_PREFIX$timing")
         ProgressBus.send("asr", 1.0, "Готово")
-        return Result(recognized.text, recognized.segment, durationMs)
+        return Result(recognized.text, recognized.segment, durationMs, audioUri)
       } finally {
         recognizer.release()
       }
+    }
+
+    private fun writeWav(context: Context, samples: FloatArray, filename: String = "naslukh-last-phrase.wav"): String {
+      val dataBytes = samples.size * 2
+      val wav = ByteBuffer.allocate(44 + dataBytes).order(ByteOrder.LITTLE_ENDIAN)
+      wav.put("RIFF".toByteArray(Charsets.US_ASCII))
+      wav.putInt(36 + dataBytes)
+      wav.put("WAVEfmt ".toByteArray(Charsets.US_ASCII))
+      wav.putInt(16)
+      wav.putShort(1) // PCM
+      wav.putShort(1) // mono
+      wav.putInt(SAMPLE_RATE)
+      wav.putInt(SAMPLE_RATE * 2)
+      wav.putShort(2)
+      wav.putShort(16)
+      wav.put("data".toByteArray(Charsets.US_ASCII))
+      wav.putInt(dataBytes)
+      for (sample in samples) {
+        wav.putShort((sample * 32768f).toInt().coerceIn(-32768, 32767).toShort())
+      }
+      val file = File(context.cacheDir, filename)
+      file.writeBytes(wav.array())
+      return Uri.fromFile(file).toString()
     }
 
     fun cancel() {

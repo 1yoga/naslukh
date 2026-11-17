@@ -32,6 +32,8 @@ export interface ListenOnceResult {
   segments: Segment[]
   /** Полная длительность захваченного utterance в миллисекундах. */
   durationMs: number
+  /** Локальный WAV в кэше приложения, если запрошен saveAudio. */
+  audioUri?: string
 }
 
 export interface Progress {
@@ -82,6 +84,8 @@ export interface ListenOnceOptions extends TranscribeOptions {
   startTimeoutSec?: number
   /** Лимит фразы 2–30 с; по умолчанию 30 с. */
   maxDurationSec?: number
+  /** Сохранить захваченную фразу в WAV для прослушивания (по умолчанию false). */
+  saveAudio?: boolean
 }
 
 export interface SpeechEngine {

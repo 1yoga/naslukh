@@ -21,6 +21,7 @@ apps/asr-bench/out/
 !apps/asr-bench/samples/README.txt
 apps/asr-android/android/local.properties
 apps/asr-android/android/.gradle/
+apps/asr-android/android/.kotlin/
 apps/asr-android/android/**/build/
 apps/asr-android/.apk-scan/
 

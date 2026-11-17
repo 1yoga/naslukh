@@ -25,6 +25,7 @@ type NativeSpeech = {
     text: string
     segments: Segment[]
     durationMs: number
+    audioUri: string | null
   }>
   cancelListenOnce(): Promise<boolean>
   stopListenOnce(): Promise<boolean>
@@ -267,12 +268,13 @@ export function createSpeechEngine(
         )
       }
       const result = await native.listenOnce({
-        vadThreshold: options.vadThreshold ?? 0.15,
+        vadThreshold: options.vadThreshold ?? 0.5,
         vadMinSpeechSec: options.vadMinSpeechSec ?? 0.25,
-        vadMinSilenceSec: options.vadMinSilenceSec ?? 0.25,
+        vadMinSilenceSec: options.vadMinSilenceSec ?? 1.0,
         numThreads: options.numThreads ?? 2,
         startTimeoutSec: options.startTimeoutSec ?? 15,
         maxDurationSec: options.maxDurationSec ?? 30,
+        saveAudio: options.saveAudio ?? false,
       })
       const brands = options.hotwords ?? []
       const correct = (text: string) =>
@@ -284,6 +286,7 @@ export function createSpeechEngine(
       return {
         text: correct(result.text),
         durationMs: result.durationMs,
+        ...(result.audioUri ? { audioUri: result.audioUri } : {}),
         segments: (result.segments ?? []).map((segment) => ({
           startSample: segment.startSample,
           endSample: segment.endSample,

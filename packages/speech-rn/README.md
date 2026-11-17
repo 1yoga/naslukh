@@ -4,7 +4,7 @@ Android-оболочка контракта `SpeechEngine`: **Silero VAD + GigaA
 
 - `ensureModel` — локальные файлы в `filesDir/naslukh-models/`; если нет — скачивает zip со своего хоста (D16) и проверяет SHA-256
 - `transcribeFile` — WAV / m4a / AAC → PCM 16 кГц mono; Silero (коммит раз в 60 с) → куски ≤30 с → GigaAM → сегменты в SQLite (`naslukh-speech.db`); повтор того же файла — из кэша / продолжение с курсора
-- `listenOnce` — Android `AudioRecord` → Silero VAD в реальном времени → автоматический конец реплики → GigaAM; ручное завершение через `stopListenOnce`, отмена через `cancelListenOnce`
+- `listenOnce` — Android `AudioRecord` → Silero VAD в реальном времени → автоматический конец реплики после 1,0 с тишины по умолчанию → GigaAM; ручное завершение через `stopListenOnce`, отмена через `cancelListenOnce`
 - ручная запись в приложение для обратной совместимости остаётся доступна отдельно
 - ворота памяти D3: старт запрещён, если свободно меньше 600 МБ
 
@@ -42,6 +42,10 @@ const { text } = await engine.listenOnce({ language: "ru" })
 // engine.stopListenOnce() завершает запись и распознаёт услышанное;
 // engine.cancelListenOnce() отклоняет ожидающий промис без результата.
 ```
+
+`vadMinSilenceSec` задаёт паузу перед завершением `listenOnce()` (по умолчанию 1,0 с). Для `transcribeFile` значение по умолчанию остаётся 0,25 с.
+
+У `listenOnce()` порог `vadThreshold` по умолчанию 0,5; у `transcribeFile` остаётся 0,15. Опция `saveAudio: true` сохраняет захваченную фразу как локальный WAV в кэше приложения и возвращает `audioUri`; при следующем таком вызове файл перезаписывается.
 
 ## Ограничения v1
 

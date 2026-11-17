@@ -11,8 +11,10 @@ export interface StandSettings {
   ignoreCache: boolean
   showSegments: boolean
   vadThreshold: number
+  listenVadThreshold: number
   vadMinSpeechSec: number
   vadMinSilenceSec: number
+  listenEndSilenceSec: number
   numThreads: number
   brandMinScore: number
   hotwords: string[]
@@ -24,8 +26,10 @@ export const DEFAULT_SETTINGS: StandSettings = {
   ignoreCache: false,
   showSegments: true,
   vadThreshold: 0.15,
+  listenVadThreshold: 0.5,
   vadMinSpeechSec: 0.25,
   vadMinSilenceSec: 0.25,
+  listenEndSilenceSec: 1.0,
   numThreads: 2,
   brandMinScore: 0.72,
   hotwords: [],
