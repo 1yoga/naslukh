@@ -9,6 +9,8 @@ export type {
   FileSource,
   JobHandler,
   JobState,
+  ListenOnceOptions,
+  ListenOnceResult,
   Progress,
   Recording,
   Segment,

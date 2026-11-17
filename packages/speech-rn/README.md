@@ -4,7 +4,8 @@ Android-оболочка контракта `SpeechEngine`: **Silero VAD + GigaA
 
 - `ensureModel` — локальные файлы в `filesDir/naslukh-models/`; если нет — скачивает zip со своего хоста (D16) и проверяет SHA-256
 - `transcribeFile` — WAV / m4a / AAC → PCM 16 кГц mono; Silero (коммит раз в 60 с) → куски ≤30 с → GigaAM → сегменты в SQLite (`naslukh-speech.db`); повтор того же файла — из кэша / продолжение с курсора
-- запись с микрофона остаётся в приложении (D11)
+- `listenOnce` — Android `AudioRecord` → Silero VAD в реальном времени → автоматический конец реплики → GigaAM; ручное завершение через `stopListenOnce`, отмена через `cancelListenOnce`
+- ручная запись в приложение для обратной совместимости остаётся доступна отдельно
 - ворота памяти D3: старт запрещён, если свободно меньше 600 МБ
 
 ## Модели (не npm)
@@ -29,8 +30,22 @@ maven { url 'https://www.jitpack.io' }
 
 3. `npx expo prebuild` / `expo run:android`.
 
+Приложение запрашивает у пользователя `RECORD_AUDIO` до вызова `listenOnce()`. Затем:
+
+```ts
+import { createSpeechEngine, GIGAAM_MODEL_ID } from "@naslukh/speech-rn"
+
+const engine = createSpeechEngine({ allowStub: false })
+await engine.ensureModel(GIGAAM_MODEL_ID)
+const { text } = await engine.listenOnce({ language: "ru" })
+// По окончании реплики промис вернёт окончательный текст.
+// engine.stopListenOnce() завершает запись и распознаёт услышанное;
+// engine.cancelListenOnce() отклоняет ожидающий промис без результата.
+```
+
 ## Ограничения v1
 
 - Только Android (iOS позже)
 - Opus/NSOP импорт как в Node пока нет — вход декодируется сразу в PCM
-- `listen()` / фон (D7/D17) — не в этой поставке
+- `listenOnce()` не даёт partial results, ограничивает фразу 30 секундами и требует, чтобы приложение заранее запросило `RECORD_AUDIO`
+- постоянное фоновое прослушивание (D7/D17) — не в этой поставке

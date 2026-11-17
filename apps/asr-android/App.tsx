@@ -29,6 +29,7 @@ import {
   addNaslukhProgressListener,
   createSpeechEngine,
   GIGAAM_MODEL_ID,
+  type TranscriptionResult,
 } from "@naslukh/speech-rn"
 import {
   DEFAULT_SETTINGS,
@@ -61,6 +62,7 @@ export default function App() {
   const [text, setText] = useState("")
   const [rawText, setRawText] = useState("")
   const [busy, setBusy] = useState(false)
+  const [listening, setListening] = useState(false)
   const [screen, setScreen] = useState<"main" | "settings">("main")
   const [settings, setSettings] = useState<StandSettings>(DEFAULT_SETTINGS)
   const [hotwordDraft, setHotwordDraft] = useState("")
@@ -97,6 +99,24 @@ export default function App() {
     await saveSettings(next)
   }
 
+  const presentResult = useCallback((result: Pick<TranscriptionResult, "text" | "segments">, s: StandSettings) => {
+    const body = result.text.trim() || "(пусто)"
+    setRawText(body)
+    if (s.showSegments && result.segments.length > 0) {
+      const lined = result.segments
+        .filter((seg) => seg.text.trim())
+        .map((seg) => {
+          const a = (seg.startSample / 16000).toFixed(1)
+          const b = (seg.endSample / 16000).toFixed(1)
+          return `${a}–${b} с  ${seg.text.trim()}`
+        })
+        .join("\n\n")
+      setText(lined || body)
+    } else {
+      setText(body)
+    }
+  }, [])
+
   const transcribeUri = useCallback(
     async (audioUri: string) => {
       const s = settingsRef.current
@@ -129,21 +149,7 @@ export default function App() {
           },
         })
         const result = await job.result()
-        const body = result.text.trim() || "(пусто)"
-        setRawText(body)
-        if (s.showSegments && result.segments.length > 0) {
-          const lined = result.segments
-            .filter((seg) => seg.text.trim())
-            .map((seg) => {
-              const a = (seg.startSample / 16000).toFixed(1)
-              const b = (seg.endSample / 16000).toFixed(1)
-              return `${a}–${b} с  ${seg.text.trim()}`
-            })
-            .join("\n\n")
-          setText(lined || body)
-        } else {
-          setText(body)
-        }
+        presentResult(result, s)
         const tag = result.fromCache
           ? "из кэша"
           : result.resumed
@@ -161,8 +167,71 @@ export default function App() {
         setProgress((p) => ({ ...p, visible: false, progress: 1 }))
       }
     },
-    [player, playerStatus.playing],
+    [player, playerStatus.playing, presentResult],
   )
+
+  async function startListenOnce() {
+    if (busy || recorderState.isRecording) return
+    if (playerStatus.playing) player.pause()
+    const perm = await requestRecordingPermissionsAsync()
+    if (!perm.granted) {
+      setStatus("Нужен доступ к микрофону")
+      return
+    }
+    const s = settingsRef.current
+    setBusy(true)
+    setUri(null)
+    setText("")
+    setRawText("")
+    setProgress({
+      visible: true,
+      phase: "asr",
+      progress: 0,
+      message: "Подготовка…",
+    })
+    try {
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true })
+      setStatus("Проверка модели…")
+      await engine.ensureModel(GIGAAM_MODEL_ID)
+      setListening(true)
+      setStatus("Слушаем фразу…")
+      const result = await engine.listenOnce({
+        language: "ru",
+        vadThreshold: s.vadThreshold,
+        vadMinSpeechSec: s.vadMinSpeechSec,
+        vadMinSilenceSec: s.vadMinSilenceSec,
+        numThreads: s.numThreads,
+        hotwords: s.hotwords,
+        correctorEnabled: s.correctorEnabled,
+        brandMinScore: s.brandMinScore,
+      })
+      presentResult(result, s)
+      setStatus(`Готово · фраза ${(result.durationMs / 1000).toFixed(1)} с`)
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
+    } finally {
+      setListening(false)
+      setBusy(false)
+      setProgress((p) => ({ ...p, visible: false, progress: 1 }))
+    }
+  }
+
+  async function cancelListenOnce() {
+    try {
+      await engine.cancelListenOnce()
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  async function stopListenOnce() {
+    try {
+      await engine.stopListenOnce()
+      setStatus("Завершаем запись…")
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   async function startRec() {
     if (playerStatus.playing) player.pause()
@@ -483,6 +552,18 @@ export default function App() {
         ) : (
           <Action label="Стоп" onPress={stopRec} tone="danger" />
         )}
+        {listening ? (
+          <>
+            <Action label="Завершить" onPress={() => void stopListenOnce()} />
+            <Action label="Отмена" onPress={() => void cancelListenOnce()} tone="danger" />
+          </>
+        ) : (
+          <Action
+            label="Фраза"
+            onPress={() => void startListenOnce()}
+            disabled={busy || recording}
+          />
+        )}
         <Action label="Файл" onPress={pickFile} disabled={busy || recording} />
         <Action
           label={playing ? "Пауза" : "Слушать"}
@@ -518,7 +599,9 @@ export default function App() {
               {uri.replace(/^file:\/\//, "")}
             </Text>
           ) : (
-            <Text style={styles.muted}>Аудио ещё нет — запиши или выбери файл</Text>
+            <Text style={styles.muted}>
+              {text ? "Фраза распознана без сохранения файла" : "Аудио ещё нет — запиши или выбери файл"}
+            </Text>
           )}
           {settings.hotwords.length > 0 ? (
             <Text style={styles.muted}>Бренды: {settings.hotwords.join(", ")}</Text>
@@ -568,7 +651,13 @@ function ProgressPanel({
 }) {
   const pct = Math.round(Math.max(0, Math.min(1, progress)) * 100)
   const title =
-    phase === "download" ? "Скачивание моделей" : phase === "asr" ? "Распознавание" : "Работаем"
+    phase === "download"
+      ? "Скачивание моделей"
+      : phase === "listen"
+        ? "Прослушивание"
+        : phase === "asr"
+          ? "Распознавание"
+          : "Работаем"
   return (
     <View style={styles.progressCard}>
       <Text style={styles.statusLabel}>{title}</Text>

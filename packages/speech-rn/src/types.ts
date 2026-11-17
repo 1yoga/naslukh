@@ -1,3 +1,5 @@
+import type { TranscribeOptions } from "./options"
+
 export type JobState =
   | "queued"
   | "recording"
@@ -23,6 +25,13 @@ export interface TranscriptionResult {
   jobId?: string
   resumed?: boolean
   fromCache?: boolean
+}
+
+export interface ListenOnceResult {
+  text: string
+  segments: Segment[]
+  /** Полная длительность захваченного utterance в миллисекундах. */
+  durationMs: number
 }
 
 export interface Progress {
@@ -67,10 +76,23 @@ export interface FileSource {
   options?: import("./options").TranscribeOptions
 }
 
+export interface ListenOnceOptions extends TranscribeOptions {
+  language?: "ru"
+  /** Сколько ждать начала речи, прежде чем вернуть ошибку. */
+  startTimeoutSec?: number
+  /** Лимит фразы 2–30 с; по умолчанию 30 с. */
+  maxDurationSec?: number
+}
+
 export interface SpeechEngine {
   capabilities(): SpeechCapabilities
   ensureModel(id: string): Promise<void>
   transcribeFile(source: FileSource): TranscriptionJob
+  listenOnce(options?: ListenOnceOptions): Promise<ListenOnceResult>
+  /** Ручное завершение текущей фразы с распознаванием захваченного звука. */
+  stopListenOnce(): Promise<void>
+  /** Отмена без результата. */
+  cancelListenOnce(): Promise<void>
   record(options?: { language: "ru" }): Recording
 }
 

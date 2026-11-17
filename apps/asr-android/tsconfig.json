@@ -3,7 +3,9 @@
   "compilerOptions": {
     "strict": true,
     "paths": {
-      "@naslukh/speech-rn": ["../../packages/speech-rn/src"]
+      "@naslukh/speech-rn": ["../../packages/speech-rn/src"],
+      "react-native": ["./node_modules/react-native/types_generated/index.d.ts"],
+      "expo-modules-core": ["./node_modules/expo-modules-core"]
     }
   },
   "include": ["**/*.ts", "**/*.tsx"]

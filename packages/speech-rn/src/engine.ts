@@ -4,6 +4,8 @@ import type {
   FileSource,
   JobHandler,
   JobState,
+  ListenOnceOptions,
+  ListenOnceResult,
   Progress,
   Recording,
   Segment,
@@ -17,6 +19,15 @@ import { GIGAAM_MODEL_ID } from "./types"
 
 type NativeSpeech = {
   ensureModel(modelId: string): Promise<string>
+  listenOnce(
+    options?: Record<string, unknown>,
+  ): Promise<{
+    text: string
+    segments: Segment[]
+    durationMs: number
+  }>
+  cancelListenOnce(): Promise<boolean>
+  stopListenOnce(): Promise<boolean>
   transcribeFile(
     uri: string,
     options?: Record<string, unknown>,
@@ -241,6 +252,56 @@ export function createSpeechEngine(
           ],
         }
       })
+    },
+
+    async listenOnce(options: ListenOnceOptions = {}): Promise<ListenOnceResult> {
+      if (options.language && options.language !== "ru") {
+        throw new Error('Поддерживается только language: "ru"')
+      }
+      if (Platform.OS !== "android") {
+        throw new Error("listenOnce пока поддерживается только на Android")
+      }
+      if (!native?.listenOnce) {
+        throw new Error(
+          "NaslukhSpeech не в APK: соберите Android с нативным модулем (см. @naslukh/speech-rn README)",
+        )
+      }
+      const result = await native.listenOnce({
+        vadThreshold: options.vadThreshold ?? 0.15,
+        vadMinSpeechSec: options.vadMinSpeechSec ?? 0.25,
+        vadMinSilenceSec: options.vadMinSilenceSec ?? 0.25,
+        numThreads: options.numThreads ?? 2,
+        startTimeoutSec: options.startTimeoutSec ?? 15,
+        maxDurationSec: options.maxDurationSec ?? 30,
+      })
+      const brands = options.hotwords ?? []
+      const correct = (text: string) =>
+        correctAsrText(text ?? "", {
+          enabled: Boolean(options.correctorEnabled),
+          brands,
+          brandMinScore: options.brandMinScore ?? 0.72,
+        })
+      return {
+        text: correct(result.text),
+        durationMs: result.durationMs,
+        segments: (result.segments ?? []).map((segment) => ({
+          startSample: segment.startSample,
+          endSample: segment.endSample,
+          text: correct(segment.text),
+          status: segment.status ?? "done",
+          modelVersion: segment.modelVersion ?? GIGAAM_MODEL_ID,
+        })),
+      }
+    },
+
+    async cancelListenOnce(): Promise<void> {
+      if (!native?.cancelListenOnce) return
+      await native.cancelListenOnce()
+    },
+
+    async stopListenOnce(): Promise<void> {
+      if (!native?.stopListenOnce) return
+      await native.stopListenOnce()
     },
 
     record(_options?: { language: "ru" }): Recording {

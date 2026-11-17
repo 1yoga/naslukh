@@ -38,6 +38,11 @@ object AsrPipeline {
     val fromCache: Boolean,
   )
 
+  data class UtteranceResult(
+    val text: String,
+    val segment: SegmentOut,
+  )
+
   data class Options(
     val ignoreCache: Boolean = false,
     val vadThreshold: Float = 0.15f,
@@ -65,6 +70,25 @@ object AsrPipeline {
         )
       }
     }
+  }
+
+  /**
+   * Распознаёт захваченный utterance уже загруженным recognizer без временного файла и SQLite-job.
+   * Используется real-time listenOnce; file pipeline остаётся отдельным и совместимым.
+   */
+  fun recognizeUtterance(
+    recognizer: OfflineRecognizer,
+    samples: FloatArray,
+    isCancelled: () -> Boolean = { false },
+  ): UtteranceResult {
+    if (samples.isEmpty()) {
+      throw IllegalArgumentException("Пустая фраза")
+    }
+    val text = recognizeSamples(recognizer, samples, isCancelled)
+    return UtteranceResult(
+      text = text,
+      segment = SegmentOut(0, samples.size, text),
+    )
   }
 
   fun transcribeFile(
@@ -298,36 +322,12 @@ object AsrPipeline {
     paths: ModelStore.Paths,
     numThreads: Int,
   ) {
-    val recognizer = OfflineRecognizer(
-      assetManager = null,
-      config = OfflineRecognizerConfig(
-        featConfig = FeatureConfig(
-          sampleRate = Chunking.SAMPLE_RATE,
-          featureDim = FEATURE_DIM,
-        ),
-        modelConfig = OfflineModelConfig(
-          transducer = OfflineTransducerModelConfig(
-            encoder = paths.encoder.absolutePath,
-            decoder = paths.decoder.absolutePath,
-            joiner = paths.joiner.absolutePath,
-          ),
-          tokens = paths.tokens.absolutePath,
-          modelType = "nemo_transducer",
-          numThreads = numThreads,
-          provider = "cpu",
-        ),
-        decodingMethod = "greedy_search",
-      ),
-    )
+    val recognizer = createRecognizer(paths, numThreads)
     try {
       val n = pending.size
       for ((idx, chunk) in pending.withIndex()) {
         val slice = samples.copyOfRange(chunk.startSample, chunk.endSample)
-        val stream = recognizer.createStream()
-        stream.acceptWaveform(slice, Chunking.SAMPLE_RATE)
-        recognizer.decode(stream)
-        val text = recognizer.getResult(stream).text.trim()
-        stream.release()
+        val text = recognizeSamples(recognizer, slice)
         db.commitSegment(
           jobId = jobId,
           startSample = chunk.startSample,
@@ -353,6 +353,50 @@ object AsrPipeline {
     }
   }
 
+  internal fun createRecognizer(
+    paths: ModelStore.Paths,
+    numThreads: Int,
+  ): OfflineRecognizer {
+    return OfflineRecognizer(
+      assetManager = null,
+      config = OfflineRecognizerConfig(
+        featConfig = FeatureConfig(
+          sampleRate = Chunking.SAMPLE_RATE,
+          featureDim = FEATURE_DIM,
+        ),
+        modelConfig = OfflineModelConfig(
+          transducer = OfflineTransducerModelConfig(
+            encoder = paths.encoder.absolutePath,
+            decoder = paths.decoder.absolutePath,
+            joiner = paths.joiner.absolutePath,
+          ),
+          tokens = paths.tokens.absolutePath,
+          modelType = "nemo_transducer",
+          numThreads = numThreads,
+          provider = "cpu",
+        ),
+        decodingMethod = "greedy_search",
+      ),
+    )
+  }
+
+  private fun recognizeSamples(
+    recognizer: OfflineRecognizer,
+    samples: FloatArray,
+    isCancelled: () -> Boolean = { false },
+  ): String {
+    if (isCancelled()) throw IllegalStateException("Прослушивание отменено")
+    val stream = recognizer.createStream()
+    return try {
+      stream.acceptWaveform(samples, Chunking.SAMPLE_RATE)
+      recognizer.decode(stream)
+      if (isCancelled()) throw IllegalStateException("Прослушивание отменено")
+      recognizer.getResult(stream).text.trim()
+    } finally {
+      stream.release()
+    }
+  }
+
   private fun drainVad(
     vad: Vad,
     pending: MutableList<Chunking.Range>,
@@ -370,14 +414,8 @@ object AsrPipeline {
     }
   }
 
-  /** Не коммитить VAD посреди активной речи (как Node isDetected). */
-  private fun vadIsSpeech(vad: Vad): Boolean {
-    return try {
-      vad.javaClass.getMethod("isDetected").invoke(vad) as Boolean
-    } catch (_: Exception) {
-      false
-    }
-  }
+  /** Не коммитить VAD посреди активной речи. */
+  private fun vadIsSpeech(vad: Vad): Boolean = vad.isSpeechDetected()
 
   private fun freeMemoryBytes(context: Context): Long {
     val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
