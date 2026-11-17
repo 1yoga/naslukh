@@ -20,6 +20,28 @@ import { SILERO_MODEL_ID } from "./paths.ts"
 
 const WINDOW = 512
 
+/** Настройки Silero. Ниже threshold — лучше ловит тихую речь (и больше фона). */
+export interface SileroVadOptions {
+  /** 0…1; было 0.5, для тихой речи в зале — ~0.25–0.35 */
+  threshold?: number
+  minSpeechDuration?: number
+  minSilenceDuration?: number
+  maxSpeechDuration?: number
+  windowSize?: number
+}
+
+/**
+ * Максимально чувствительный сток для тихой речи в зале.
+ * threshold ниже → больше ловим шёпот (и больше фона уйдёт в ASR).
+ */
+export const DEFAULT_SILERO_VAD: Required<SileroVadOptions> = {
+  threshold: 0.15,
+  minSpeechDuration: 0.08,
+  minSilenceDuration: 0.25,
+  maxSpeechDuration: 30,
+  windowSize: WINDOW,
+}
+
 export interface VadFileResult {
   jobId: string
   totalSamples: number
@@ -38,6 +60,7 @@ export interface RunVadSamplesOptions {
   resume?: boolean
   audioPath?: string | null
   freeMemoryBytes?: number
+  silero?: SileroVadOptions
   device?: {
     deviceModel: string
     osName: string
@@ -49,16 +72,17 @@ export type RunVadFileOptions = Omit<RunVadSamplesOptions, "samples" | "audioPat
   wavPath: string
 }
 
-function createVad(modelPath: string) {
+function createVad(modelPath: string, silero?: SileroVadOptions) {
+  const cfg = { ...DEFAULT_SILERO_VAD, ...silero }
   return new sherpa.Vad(
     {
       sileroVad: {
         model: modelPath,
-        threshold: 0.5,
-        minSpeechDuration: 0.25,
-        minSilenceDuration: 0.5,
-        windowSize: WINDOW,
-        maxSpeechDuration: 20,
+        threshold: cfg.threshold,
+        minSpeechDuration: cfg.minSpeechDuration,
+        minSilenceDuration: cfg.minSilenceDuration,
+        windowSize: cfg.windowSize,
+        maxSpeechDuration: cfg.maxSpeechDuration,
       },
       sampleRate: SAMPLE_RATE_HZ,
       debug: false,
@@ -98,7 +122,7 @@ export function runVadSamples(options: RunVadSamplesOptions): VadFileResult {
   }
 
   const cursor = job.vadCursorSample
-  const vad = createVad(options.modelPath)
+  const vad = createVad(options.modelPath, options.silero)
   const pending: SampleRange[] = []
   let commits = 0
   let lastCommitted = cursor

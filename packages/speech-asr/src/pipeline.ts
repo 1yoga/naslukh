@@ -5,6 +5,7 @@ import type { SqlDatabase } from "../../speech-store/src/index.ts"
 import { GIGAAM_MODEL_ID } from "./paths.ts"
 import { runAsrSamples } from "./run-file.ts"
 import type { AsrFileResult, AsrRunHooks } from "./run-file.ts"
+import type { SileroVadOptions } from "../../speech-vad/src/run-file.ts"
 
 export interface RunImportPipelineOptions {
   wavPath: string
@@ -14,6 +15,7 @@ export interface RunImportPipelineOptions {
   audioDir: string
   jobId?: string
   freeMemoryBytes?: number
+  silero?: SileroVadOptions
   device?: {
     deviceModel: string
     osName: string
@@ -86,6 +88,7 @@ export async function runImportPipeline(
     existingJob: true,
     audioPath,
     freeMemoryBytes: options.freeMemoryBytes,
+    silero: options.silero,
     device: options.device,
     hooks: options.hooks,
   })

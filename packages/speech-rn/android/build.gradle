@@ -4,6 +4,13 @@ apply plugin: 'kotlin-android'
 group = 'ru.naslukh.speech'
 version = '0.1.0'
 
+// JitPack для sherpa-onnx (приложение тоже должно иметь maven { url 'https://www.jitpack.io' })
+repositories {
+  mavenCentral()
+  google()
+  maven { url 'https://www.jitpack.io' }
+}
+
 android {
   namespace "ru.naslukh.speech"
   compileSdkVersion safeExtGet("compileSdkVersion", 35)
@@ -11,16 +18,28 @@ android {
   defaultConfig {
     minSdkVersion safeExtGet("minSdkVersion", 24)
     targetSdkVersion safeExtGet("targetSdkVersion", 35)
+    consumerProguardFiles 'proguard-rules.pro'
   }
 
   lintOptions {
     abortOnError false
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    jvmTarget = '17'
   }
 }
 
 dependencies {
   implementation project(':expo-modules-core')
   implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:${safeExtGet('kotlinVersion', '2.0.21')}"
+  // Offline ASR + VAD (JNI arm64/armeabi/x86_64)
+  implementation 'com.github.k2-fsa.sherpa-onnx:sherpa-onnx:v1.13.5'
 }
 
 def safeExtGet(prop, fallback) {

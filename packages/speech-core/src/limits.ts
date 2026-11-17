@@ -14,10 +14,25 @@ export const SOFT_CUT_MIN_SEC = 20
 
 export const SOFT_CUT_MIN_SAMPLES = SOFT_CUT_MIN_SEC * SAMPLE_RATE_HZ
 
-/** Отступ Silero с каждой стороны интервала. */
-export const VAD_PAD_SEC = 0.25
+/** Отступ Silero с каждой стороны интервала (чуть больше — края тихой речи). */
+export const VAD_PAD_SEC = 0.5
 
 export const VAD_PAD_SAMPLES = Math.round(VAD_PAD_SEC * SAMPLE_RATE_HZ)
+
+/**
+ * Паузы короче этого между кусками VAD склеиваем —
+ * иначе тихие реплики «выпадают» из середины диалога.
+ */
+export const VAD_MERGE_GAP_SEC = 3
+
+export const VAD_MERGE_GAP_SAMPLES = Math.round(VAD_MERGE_GAP_SEC * SAMPLE_RATE_HZ)
+
+/**
+ * Если VAD покрыл меньше этой доли файла — берём весь файл целиком
+ * (тихая речь в шуме часто не дотягивает до порога).
+ */
+/** 0.99 ≈ почти всегда целиком: тихая речь в дырах VAD не теряется. */
+export const VAD_MIN_COVERAGE = 0.99
 
 /**
  * Перехлёст, когда рез идёт по речи (D2, старт).
@@ -57,6 +72,6 @@ export const GIGAAM_FEATURE_DIM = 64
 export const CHECKPOINT_FORMAT = 1
 
 /** Меняется, когда меняются нарезка, склейка или нормализация. */
-export const PIPELINE_VERSION = 1
+export const PIPELINE_VERSION = 3
 
 export const LIBRARY_VERSION = "0.1.0"

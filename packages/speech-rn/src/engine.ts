@@ -1,4 +1,5 @@
-import { NativeModules, Platform } from "react-native"
+import { Platform } from "react-native"
+import { requireOptionalNativeModule } from "expo-modules-core"
 import type {
   FileSource,
   JobHandler,
@@ -11,14 +12,24 @@ import type {
   TranscriptionJob,
   TranscriptionResult,
 } from "./types"
+import { correctAsrText } from "./corrector"
 import { GIGAAM_MODEL_ID } from "./types"
 
 type NativeSpeech = {
   ensureModel(modelId: string): Promise<string>
-  transcribeFile(uri: string): Promise<{ text: string; segments: Segment[] }>
+  transcribeFile(
+    uri: string,
+    options?: Record<string, unknown>,
+  ): Promise<{
+    text: string
+    segments: Segment[]
+    jobId?: string
+    resumed?: boolean
+    fromCache?: boolean
+  }>
 }
 
-const native: NativeSpeech | undefined = NativeModules.NaslukhSpeech
+const native = requireOptionalNativeModule<NativeSpeech>("NaslukhSpeech")
 
 type HandlerMap = {
   progress: JobHandler<Progress>[]
@@ -162,7 +173,9 @@ export function createSpeechEngine(
         return
       }
       if (!allowStub) {
-        throw new Error("Нативный модуль NaslukhSpeech не подключён")
+        throw new Error(
+          "NaslukhSpeech не в APK: expo prebuild + JitPack (см. @naslukh/speech-rn README)",
+        )
       }
     },
 
@@ -171,24 +184,57 @@ export function createSpeechEngine(
         throw new Error('Поддерживается только language: "ru"')
       }
       return new FileJob(async () => {
+        const opts = source.options ?? {}
         if (native?.transcribeFile) {
-          const result = await native.transcribeFile(source.uri)
+          const result = await native.transcribeFile(source.uri, {
+            ignoreCache: Boolean(opts.ignoreCache),
+            vadThreshold: opts.vadThreshold ?? 0.15,
+            vadMinSpeechSec: opts.vadMinSpeechSec ?? 0.25,
+            vadMinSilenceSec: opts.vadMinSilenceSec ?? 0.25,
+            numThreads: opts.numThreads ?? 2,
+            hotwords: opts.hotwords ?? [],
+          })
+          const rawText = result.text ?? ""
+          const text = correctAsrText(rawText, {
+            enabled: Boolean(opts.correctorEnabled),
+            brands: opts.hotwords ?? [],
+            brandMinScore: opts.brandMinScore ?? 0.72,
+          })
+          const segments = (result.segments ?? []).map((s) => {
+            const segText = correctAsrText(s.text ?? "", {
+              enabled: Boolean(opts.correctorEnabled),
+              brands: opts.hotwords ?? [],
+              brandMinScore: opts.brandMinScore ?? 0.72,
+            })
+            return {
+              startSample: s.startSample,
+              endSample: s.endSample,
+              text: segText,
+              status: s.status ?? "done",
+              modelVersion: s.modelVersion ?? GIGAAM_MODEL_ID,
+            }
+          })
           return {
-            text: result.text,
-            segments: result.segments ?? [],
+            text,
+            jobId: result.jobId,
+            resumed: result.resumed,
+            fromCache: result.fromCache,
+            segments,
           }
         }
         if (!allowStub) {
-          throw new Error("Нативный модуль NaslukhSpeech не подключён")
+          throw new Error(
+            "NaslukhSpeech не в APK: expo prebuild + JitPack (см. @naslukh/speech-rn README)",
+          )
         }
         await delay(800)
         return {
-          text: "[заглушка ASR] Локальная модель ещё не ответила — проверьте сборку с NaslukhSpeech.",
+          text: "[заглушка ASR] Нативный модуль не слинкован — соберите Android с NaslukhSpeech.",
           segments: [
             {
               startSample: 0,
               endSample: 16000,
-              text: "[заглушка ASR] Локальная модель ещё не ответила — проверьте сборку с NaslukhSpeech.",
+              text: "[заглушка ASR] Нативный модуль не слинкован — соберите Android с NaslukhSpeech.",
               status: "done",
               modelVersion: GIGAAM_MODEL_ID,
             },

@@ -15,6 +15,14 @@ dist-ssr
 public/onnx
 public/piper
 public/asr-wasm
+testdata/
+apps/asr-bench/samples/*/
+apps/asr-bench/out/
+!apps/asr-bench/samples/README.txt
+apps/asr-android/android/local.properties
+apps/asr-android/android/.gradle/
+apps/asr-android/android/**/build/
+apps/asr-android/.apk-scan/
 
 # Android / Gradle (RN packages, e.g. speech-rn)
 **/android/build/

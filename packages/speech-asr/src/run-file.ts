@@ -4,6 +4,8 @@ import {
   SAMPLE_RATE_HZ,
   assertCanStartRecognition,
   buildSpeechChunks,
+  ensureVadCoverage,
+  mergeCloseVadIntervals,
   stitchByTokenCenters,
 } from "../../speech-core/src/index.ts"
 import type {
@@ -29,9 +31,15 @@ import {
   SILERO_MODEL_PATH,
   SILERO_MODEL_URL,
 } from "../../speech-vad/src/paths.ts"
-import { runVadSamples } from "../../speech-vad/src/run-file.ts"
+import {
+  runVadSamples,
+  type SileroVadOptions,
+} from "../../speech-vad/src/run-file.ts"
 import { GIGAAM_MODEL_ID } from "./paths.ts"
+import { enhanceForAsr, normalizePeakGain } from "./preprocess.ts"
 import { createGigaamRecognizer } from "./recognize.ts"
+
+export { normalizePeakGain } from "./preprocess.ts"
 
 export interface AsrRunHooks {
   onState?: (state: JobState) => void
@@ -49,6 +57,10 @@ export interface RunAsrSamplesOptions {
   existingJob?: boolean
   audioPath?: string | null
   freeMemoryBytes?: number
+  /** Чувствительность Silero; по умолчанию ловит тихую речь лучше стока 0.5 */
+  silero?: SileroVadOptions
+  /** Пропустить denoise/оконный AGC (оставить сырой PCM + пик). */
+  skipEnhance?: boolean
   device?: {
     deviceModel: string
     osName: string
@@ -74,6 +86,7 @@ export interface AsrFileResult {
 /**
  * VAD → куски → GigaAM → сегменты.
  * Вход — PCM 16 кГц (из WAV или декода NSOP).
+ * Перед VAD: denoise + оконный AGC (тихая речь в шуме).
  */
 export function runAsrSamples(options: RunAsrSamplesOptions): AsrFileResult {
   const device = options.device ?? {
@@ -108,8 +121,12 @@ export function runAsrSamples(options: RunAsrSamplesOptions): AsrFileResult {
     state: "recognizing",
   })
 
+  const samples = options.skipEnhance
+    ? normalizePeakGain(options.samples)
+    : enhanceForAsr(options.samples)
+
   runVadSamples({
-    samples: options.samples,
+    samples,
     modelPath: options.sileroPath,
     db: options.db,
     jobId,
@@ -118,11 +135,16 @@ export function runAsrSamples(options: RunAsrSamplesOptions): AsrFileResult {
     resume: true,
     audioPath: options.audioPath ?? null,
     freeMemoryBytes: options.freeMemoryBytes,
+    silero: options.silero,
     device,
   })
 
-  const intervals = listVadIntervals(options.db, jobId)
-  const chunks = buildSpeechChunks(intervals, options.samples.length)
+  const rawIntervals = listVadIntervals(options.db, jobId)
+  const intervals = ensureVadCoverage(
+    mergeCloseVadIntervals(rawIntervals),
+    samples.length,
+  )
+  const chunks = buildSpeechChunks(intervals, samples.length)
   const fromSample = pendingChunkStart(options.db, jobId)
   const pending = chunks.filter((chunk) => chunk.endSample > fromSample)
 
@@ -130,7 +152,7 @@ export function runAsrSamples(options: RunAsrSamplesOptions): AsrFileResult {
   const transcripts: ChunkTranscript[] = []
   try {
     for (const chunk of pending) {
-      const slice = options.samples.subarray(chunk.startSample, chunk.endSample)
+      const slice = samples.subarray(chunk.startSample, chunk.endSample)
       const transcript = recognizer.decodeChunk(chunk, slice)
       transcripts.push(transcript)
       const stored = commitSegment(options.db, {
@@ -151,7 +173,7 @@ export function runAsrSamples(options: RunAsrSamplesOptions): AsrFileResult {
       })
       hooks?.onProgress?.({
         processedSamples: chunk.endSample,
-        totalSamples: options.samples.length,
+        totalSamples: samples.length,
         state: "recognizing",
       })
     }
@@ -163,8 +185,8 @@ export function runAsrSamples(options: RunAsrSamplesOptions): AsrFileResult {
   setJobState(options.db, jobId, "done", "complete", device)
   hooks?.onState?.("done")
   hooks?.onProgress?.({
-    processedSamples: options.samples.length,
-    totalSamples: options.samples.length,
+    processedSamples: samples.length,
+    totalSamples: samples.length,
     state: "done",
   })
   return {

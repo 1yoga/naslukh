@@ -1,0 +1,10 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "@naslukh/speech-rn": ["../../packages/speech-rn/src"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx"]
+}

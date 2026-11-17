@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import { SAMPLE_RATE_HZ } from "../../speech-core/src/index.ts"
-import { int16ToFloat } from "./pcm.ts"
+import { floatToInt16, int16ToFloat } from "./pcm.ts"
 
 /** Читает PCM WAV: моно, 16 бит, 16 кГц (или ресемпл линейный до 16 кГц). */
 export function readWavPcm16(path: string): {
@@ -45,6 +45,28 @@ export function readWavPcm16(path: string): {
     return { samples: float, sampleRate }
   }
   return { samples: resampleLinear(float, sampleRate, SAMPLE_RATE_HZ), sampleRate: SAMPLE_RATE_HZ }
+}
+
+/** Пишет моно PCM16 WAV 16 кГц. */
+export function writeWavPcm16(path: string, samples: Float32Array, sampleRate = SAMPLE_RATE_HZ): void {
+  const pcm = floatToInt16(samples)
+  const dataSize = pcm.byteLength
+  const buffer = Buffer.alloc(44 + dataSize)
+  buffer.write("RIFF", 0)
+  buffer.writeUInt32LE(36 + dataSize, 4)
+  buffer.write("WAVE", 8)
+  buffer.write("fmt ", 12)
+  buffer.writeUInt32LE(16, 16)
+  buffer.writeUInt16LE(1, 20)
+  buffer.writeUInt16LE(1, 22)
+  buffer.writeUInt32LE(sampleRate, 24)
+  buffer.writeUInt32LE(sampleRate * 2, 28)
+  buffer.writeUInt16LE(2, 32)
+  buffer.writeUInt16LE(16, 34)
+  buffer.write("data", 36)
+  buffer.writeUInt32LE(dataSize, 40)
+  Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength).copy(buffer, 44)
+  writeFileSync(path, buffer)
 }
 
 function resampleLinear(

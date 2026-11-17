@@ -15,6 +15,7 @@ import type {
 } from "../../speech-core/src/index.ts"
 import { listSegments } from "../../speech-store/src/index.ts"
 import type { SqlDatabase } from "../../speech-store/src/index.ts"
+import type { SileroVadOptions } from "../../speech-vad/src/run-file.ts"
 import { ensureGigaamModel } from "./download.ts"
 import { runImportPipeline } from "./pipeline.ts"
 import { GIGAAM_MODEL_ID } from "./paths.ts"
@@ -27,6 +28,8 @@ export interface NodeEngineOptions {
   /** Готовый каталог GigaAM; иначе скачается при ensureModel. */
   modelDir?: string
   sileroPath?: string
+  /** Чувствительность Silero VAD (ниже threshold — тише речь). */
+  silero?: SileroVadOptions
   freeMemoryBytes?: number
   device?: {
     deviceModel: string
@@ -195,6 +198,7 @@ export function createNodeEngine(options: NodeEngineOptions): SpeechEngine {
           audioDir: options.audioDir,
           jobId,
           freeMemoryBytes: options.freeMemoryBytes ?? freemem(),
+          silero: options.silero,
           device: options.device,
           hooks: {
             onState: hooks.onState,

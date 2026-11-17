@@ -149,7 +149,7 @@ describe("схема", () => {
     assert.match(MIGRATION_001, /CREATE TABLE journal/)
     assert.equal(MIGRATION_001.includes("audio_bytes"), false)
     assert.equal(CHECKPOINT_FORMAT, 1)
-    assert.equal(PIPELINE_VERSION, 1)
+    assert.equal(PIPELINE_VERSION, 3)
     assert.equal(MAX_CHUNK_SAMPLES, 30 * SAMPLE_RATE_HZ)
   })
 })

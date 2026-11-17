@@ -1,6 +1,13 @@
 export { ensureGigaamModel } from "./download.ts"
 export { createGigaamRecognizer, stitchChunks } from "./recognize.ts"
 export {
+  enhanceForAsr,
+  highpass100,
+  normalizePeakGain,
+  windowedAgc,
+} from "./preprocess.ts"
+export type { PreprocessOptions } from "./preprocess.ts"
+export {
   ensureSilero,
   runAsrFile,
   runAsrSamples,

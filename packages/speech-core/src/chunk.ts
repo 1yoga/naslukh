@@ -2,6 +2,8 @@ import {
   MAX_CHUNK_SAMPLES,
   OVERLAP_SAMPLES,
   SOFT_CUT_MIN_SAMPLES,
+  VAD_MERGE_GAP_SAMPLES,
+  VAD_MIN_COVERAGE,
   VAD_PAD_SAMPLES,
 } from "./limits.ts"
 
@@ -119,6 +121,50 @@ function lastIndexForPack(
     }
   }
   return lastFit
+}
+
+/**
+ * Склеить соседние интервалы, если пауза между ними ≤ maxGapSamples.
+ * Сохраняет тихие реплики между громкими фразами.
+ */
+export function mergeCloseVadIntervals(
+  intervals: readonly SampleRange[],
+  maxGapSamples: number = VAD_MERGE_GAP_SAMPLES,
+): SampleRange[] {
+  if (intervals.length === 0) return []
+  assertOrdered(intervals)
+  const out: SampleRange[] = [
+    { startSample: intervals[0].startSample, endSample: intervals[0].endSample },
+  ]
+  for (let i = 1; i < intervals.length; i++) {
+    const prev = out[out.length - 1]!
+    const cur = intervals[i]!
+    if (cur.startSample - prev.endSample <= maxGapSamples) {
+      prev.endSample = Math.max(prev.endSample, cur.endSample)
+    } else {
+      out.push({ startSample: cur.startSample, endSample: cur.endSample })
+    }
+  }
+  return out
+}
+
+/**
+ * Если VAD почти ничего не нашёл — отдать весь файл (тихая речь в шуме).
+ */
+export function ensureVadCoverage(
+  intervals: readonly SampleRange[],
+  totalSamples: number,
+  minCoverage: number = VAD_MIN_COVERAGE,
+): SampleRange[] {
+  if (totalSamples <= 0) return []
+  const covered = intervals.reduce(
+    (sum, item) => sum + (item.endSample - item.startSample),
+    0,
+  )
+  if (intervals.length === 0 || covered / totalSamples < minCoverage) {
+    return [{ startSample: 0, endSample: totalSamples }]
+  }
+  return [...intervals]
 }
 
 /**

@@ -1,7 +1,12 @@
-export { runVadFile, runVadSamples } from "./run-file.ts"
+export {
+  DEFAULT_SILERO_VAD,
+  runVadFile,
+  runVadSamples,
+} from "./run-file.ts"
 export type {
   RunVadFileOptions,
   RunVadSamplesOptions,
+  SileroVadOptions,
   VadFileResult,
 } from "./run-file.ts"
 export {

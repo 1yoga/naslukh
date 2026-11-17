@@ -19,6 +19,10 @@ export interface Segment {
 export interface TranscriptionResult {
   text: string
   segments: Segment[]
+  /** SQLite job id (Android checkpoint). */
+  jobId?: string
+  resumed?: boolean
+  fromCache?: boolean
 }
 
 export interface Progress {
@@ -60,6 +64,7 @@ export interface SpeechCapabilities {
 export interface FileSource {
   uri: string
   language: "ru"
+  options?: import("./options").TranscribeOptions
 }
 
 export interface SpeechEngine {

@@ -1,0 +1,30 @@
+{
+  "name": "@naslukh/asr-android",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "prebuild": "expo prebuild --platform android",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@naslukh/speech-rn": "file:../../packages/speech-rn",
+    "babel-preset-expo": "~58.0.0",
+    "expo": "~58.0.21",
+    "expo-audio": "~58.0.10",
+    "expo-clipboard": "~58.0.4",
+    "expo-document-picker": "~58.0.4",
+    "expo-file-system": "~58.0.13",
+    "expo-keep-awake": "~58.0.3",
+    "expo-sharing": "~58.0.22",
+    "expo-status-bar": "~58.0.4",
+    "react": "19.3.0",
+    "react-native": "0.88.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.3.0",
+    "typescript": "~5.9.2"
+  }
+}

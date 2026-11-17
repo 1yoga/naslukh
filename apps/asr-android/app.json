@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "Naslukh ASR",
+    "slug": "naslukh-asr-android",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "ru.naslukh.asrdemo",
+      "permissions": [
+        "RECORD_AUDIO",
+        "READ_EXTERNAL_STORAGE"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Нужен микрофон для тестовой записи"
+        }
+      ],
+      "expo-sharing"
+    ]
+  }
+}

@@ -1,4 +1,9 @@
 declare module "react-native" {
-  export const NativeModules: Record<string, unknown>
   export const Platform: { OS: string }
+}
+
+declare module "expo-modules-core" {
+  export function requireOptionalNativeModule<T = unknown>(
+    moduleName: string,
+  ): T | null
 }

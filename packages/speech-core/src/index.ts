@@ -16,6 +16,9 @@ export {
   SOFT_CUT_MIN_SEC,
   VAD_COMMIT_SAMPLES,
   VAD_COMMIT_SEC,
+  VAD_MERGE_GAP_SAMPLES,
+  VAD_MERGE_GAP_SEC,
+  VAD_MIN_COVERAGE,
   VAD_PAD_SAMPLES,
   VAD_PAD_SEC,
 } from "./limits.ts"
@@ -32,6 +35,8 @@ export { ManifestError, assertManifest, fingerprintKey } from "./manifest.ts"
 export { MIGRATION_001 } from "./schema.ts"
 export {
   buildSpeechChunks,
+  ensureVadCoverage,
+  mergeCloseVadIntervals,
   padSpeechInterval,
   splitLongSpeech,
 } from "./chunk.ts"
