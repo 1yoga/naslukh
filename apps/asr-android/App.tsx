@@ -60,6 +60,7 @@ type ListenTiming = {
   utteranceEndDetectionMs: number | null
   trailingSilenceMs: number | null
   recognizerCreationMs: number
+  recognizerReused: boolean
   recognitionMs: number
   endToTextMs: number
   endReason: "vad" | "stop" | "limit"
@@ -246,7 +247,8 @@ export default function App() {
         saveAudio: true,
       })
       setUri(result.audioUri ?? null)
-      setRawInputUri(new File(Paths.cache, "naslukh-pre-vad.wav").uri)
+      const rawInputFile = new File(Paths.cache, "naslukh-pre-vad.wav")
+      setRawInputUri(rawInputFile.exists ? rawInputFile.uri : null)
       presentResult(result, s)
       setStatus(`Готово · фраза ${(result.durationMs / 1000).toFixed(1)} с`)
     } catch (e) {
@@ -664,11 +666,13 @@ export default function App() {
           onPress={togglePlay}
           disabled={busy || recording || !uri}
         />
-        <Action
-          label={rawInputStatus.playing ? "Пауза входа" : "Слушать вход"}
-          onPress={toggleRawInput}
-          disabled={busy || recording || !rawInputUri}
-        />
+        {rawInputUri ? (
+          <Action
+            label={rawInputStatus.playing ? "Пауза входа" : "Слушать вход"}
+            onPress={toggleRawInput}
+            disabled={busy || recording || !rawInputUri}
+          />
+        ) : null}
         <Action
           label="Распознать"
           onPress={() =>
@@ -721,7 +725,7 @@ export default function App() {
           <Text style={styles.timingLine}>Микрофон → начало речи (VAD): {listenTiming.speechStartDetectionMs} мс</Text>
           <Text style={styles.timingLine}>Начало речи → конец (VAD): {listenTiming.utteranceEndDetectionMs === null ? "—" : `${listenTiming.utteranceEndDetectionMs} мс`}</Text>
           <Text style={styles.timingLine}>Тишина перед завершением: {listenTiming.trailingSilenceMs === null ? "—" : `${listenTiming.trailingSilenceMs} мс`}</Text>
-          <Text style={styles.timingLine}>Создание GigaAM: {listenTiming.recognizerCreationMs} мс</Text>
+          <Text style={styles.timingLine}>GigaAM ({listenTiming.recognizerReused ? "из памяти" : "создание"}): {listenTiming.recognizerCreationMs} мс</Text>
           <Text style={styles.timingLine}>Распознавание: {listenTiming.recognitionMs} мс</Text>
           <Text style={styles.timingLine}>Остановка записи → текст GigaAM: {listenTiming.endToTextMs} мс</Text>
           <Text style={styles.muted}>Отсчёты VAD включают ожидание речи и длительность фразы.</Text>

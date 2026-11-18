@@ -3,6 +3,7 @@ package ru.naslukh.speech
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
@@ -10,6 +11,7 @@ import android.media.MediaRecorder
 import android.net.Uri
 import android.os.SystemClock
 import android.util.Log
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.SileroVadModelConfig
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
@@ -43,8 +45,18 @@ object LiveListen {
   private const val TIMING_PREFIX = "listenOnceTiming:"
   private const val INPUT_TAG = "NaslukhInput"
   private const val PRE_VAD_CAPTURE_SAMPLES = 10 * SAMPLE_RATE
+  private const val PRE_VAD_WAV = "naslukh-pre-vad.wav"
+
+  private data class CachedRecognizer(
+    val modelDir: String,
+    val numThreads: Int,
+    val recognizer: OfflineRecognizer,
+  )
 
   private val active = AtomicReference<Session?>(null)
+  private val cacheLock = Any()
+  private var cachedRecognizer: CachedRecognizer? = null
+  private var releaseWhenIdle = false
 
   data class Options(
     val vadThreshold: Float = 0.5f,
@@ -86,15 +98,64 @@ object LiveListen {
 
   fun listenOnce(context: Context, options: Options = Options()): Result {
     val session = Session()
-    if (!active.compareAndSet(null, session)) {
-      throw IllegalStateException("Прослушивание уже запущено")
+    synchronized(cacheLock) {
+      if (!active.compareAndSet(null, session)) {
+        throw IllegalStateException("Прослушивание уже запущено")
+      }
     }
     return try {
       session.run(context.applicationContext, options)
     } finally {
-      session.close()
-      active.compareAndSet(session, null)
+      try {
+        session.close()
+      } finally {
+        synchronized(cacheLock) {
+          active.compareAndSet(session, null)
+          if (releaseWhenIdle) {
+            releaseWhenIdle = false
+            releaseCachedLocked()
+          }
+        }
+      }
     }
+  }
+
+  /** Модуль исчез: отменяем активный вызов и освобождаем recognizer после его завершения. */
+  fun onModuleDestroy() {
+    val session = synchronized(cacheLock) {
+      val current = active.get()
+      if (current == null) releaseCachedLocked() else releaseWhenIdle = true
+      current
+    }
+    session?.cancel()
+  }
+
+  private fun recognizerFor(paths: ModelStore.Paths, numThreads: Int): Pair<OfflineRecognizer, Boolean> {
+    val modelDir = paths.gigaamDir.absolutePath
+    synchronized(cacheLock) {
+      val cached = cachedRecognizer
+      if (cached != null && cached.modelDir == modelDir && cached.numThreads == numThreads) {
+        return cached.recognizer to true
+      }
+      releaseCachedLocked()
+    }
+    val created = AsrPipeline.createRecognizer(paths, numThreads)
+    synchronized(cacheLock) {
+      cachedRecognizer = CachedRecognizer(modelDir, numThreads, created)
+    }
+    return created to false
+  }
+
+  private fun discardRecognizer(recognizer: OfflineRecognizer) {
+    synchronized(cacheLock) {
+      if (cachedRecognizer?.recognizer === recognizer) releaseCachedLocked()
+    }
+  }
+
+  private fun releaseCachedLocked() {
+    val cached = cachedRecognizer
+    cachedRecognizer = null
+    cached?.recognizer?.release()
   }
 
   /** Останавливает захват или помечает текущий ASR как отменённый. */
@@ -121,6 +182,10 @@ object LiveListen {
     @SuppressLint("MissingPermission")
     fun run(context: Context, options: Options): Result {
       val nativeStartedAtNs = SystemClock.elapsedRealtimeNanos()
+      val rawInputFile = File(context.cacheDir, PRE_VAD_WAV)
+      if (rawInputFile.exists() && !rawInputFile.delete()) {
+        Log.w(INPUT_TAG, "Не удалось удалить старый $PRE_VAD_WAV")
+      }
       checkPermission(context)
       Checkpoint.assertCanStart(freeMemoryBytes(context))
 
@@ -164,7 +229,8 @@ object LiveListen {
       var recordingStoppedAtNs = 0L
       var firstAudioReadAtNs = 0L
       var trailingSilenceMs: Long? = null
-      val preVadCapture = if (options.saveAudio) SampleBuffer(PRE_VAD_CAPTURE_SAMPLES) else null
+      val debugBuild = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+      val preVadCapture = if (debugBuild && options.saveAudio) SampleBuffer(PRE_VAD_CAPTURE_SAMPLES) else null
       val samples = try {
         checkCancelled()
         val vad = Vad(
@@ -333,46 +399,49 @@ object LiveListen {
 
       checkCancelled()
       val durationMs = (samples.size * 1000L) / SAMPLE_RATE
-      ProgressBus.send("asr", 0.1, "Загрузка GigaAM…")
+      ProgressBus.send("asr", 0.1, "Подготовка GigaAM…")
       val recognizerStartedAtNs = SystemClock.elapsedRealtimeNanos()
-      val recognizer = AsrPipeline.createRecognizer(paths, options.numThreads)
+      val (recognizer, recognizerReused) = LiveListen.recognizerFor(paths, options.numThreads)
       val recognizerReadyAtNs = SystemClock.elapsedRealtimeNanos()
-      try {
-        ProgressBus.send("asr", 0.35, "Распознаём фразу…")
-        val recognitionStartedAtNs = SystemClock.elapsedRealtimeNanos()
-        val recognized = AsrPipeline.recognizeUtterance(
+      checkCancelled()
+      ProgressBus.send("asr", 0.35, "Распознаём фразу…")
+      val recognitionStartedAtNs = SystemClock.elapsedRealtimeNanos()
+      val recognized = try {
+        AsrPipeline.recognizeUtterance(
           recognizer = recognizer,
           samples = samples,
           isCancelled = { cancelled.get() },
         )
-        val textReadyAtNs = SystemClock.elapsedRealtimeNanos()
-        checkCancelled()
-        val audioUri = if (options.saveAudio) writeWav(context, samples) else null
-        if (preVadCapture != null && preVadCapture.size > 0) {
-          val rawUri = writeWav(context, preVadCapture.toArray(), "naslukh-pre-vad.wav")
-          Log.i(INPUT_TAG, "preVadWav=$rawUri durationMs=${preVadCapture.size * 1000L / SAMPLE_RATE}")
-        }
-        checkCancelled()
-        val timing = JSONObject()
-          .put("microphonePreparationMs", (microphoneReadyAtNs - nativeStartedAtNs) / 1_000_000)
-          .put("firstAudioReadMs", (firstAudioReadAtNs - microphoneReadyAtNs) / 1_000_000)
-          .put("speechStartDetectionMs", (speechDetectedAtNs - microphoneReadyAtNs) / 1_000_000)
-          .put("utteranceEndDetectionMs", if (vadEndDetectedAtNs == 0L) JSONObject.NULL
-            else (vadEndDetectedAtNs - speechDetectedAtNs) / 1_000_000)
-          .put("trailingSilenceMs", trailingSilenceMs ?: JSONObject.NULL)
-          .put("recognizerCreationMs", (recognizerReadyAtNs - recognizerStartedAtNs) / 1_000_000)
-          .put("recognitionMs", (textReadyAtNs - recognitionStartedAtNs) / 1_000_000)
-          .put("endToTextMs", (textReadyAtNs - recordingStoppedAtNs) / 1_000_000)
-          .put("endReason", if (vadEndDetectedAtNs != 0L) "vad"
-            else if (stopRequested.get()) "stop" else "limit")
-          .toString()
-        Log.i(TIMING_TAG, "$TIMING_PREFIX$timing")
-        ProgressBus.send("asr", 1.0, "$TIMING_PREFIX$timing")
-        ProgressBus.send("asr", 1.0, "Готово")
-        return Result(recognized.text, recognized.segment, durationMs, audioUri)
-      } finally {
-        recognizer.release()
+      } catch (e: Throwable) {
+        LiveListen.discardRecognizer(recognizer)
+        throw e
       }
+      val textReadyAtNs = SystemClock.elapsedRealtimeNanos()
+      checkCancelled()
+      val audioUri = if (options.saveAudio) writeWav(context, samples) else null
+      if (preVadCapture != null && preVadCapture.size > 0) {
+        val rawUri = writeWav(context, preVadCapture.toArray(), PRE_VAD_WAV)
+        Log.i(INPUT_TAG, "preVadWav=$rawUri durationMs=${preVadCapture.size * 1000L / SAMPLE_RATE}")
+      }
+      checkCancelled()
+      val timing = JSONObject()
+        .put("microphonePreparationMs", (microphoneReadyAtNs - nativeStartedAtNs) / 1_000_000)
+        .put("firstAudioReadMs", (firstAudioReadAtNs - microphoneReadyAtNs) / 1_000_000)
+        .put("speechStartDetectionMs", (speechDetectedAtNs - microphoneReadyAtNs) / 1_000_000)
+        .put("utteranceEndDetectionMs", if (vadEndDetectedAtNs == 0L) JSONObject.NULL
+          else (vadEndDetectedAtNs - speechDetectedAtNs) / 1_000_000)
+        .put("trailingSilenceMs", trailingSilenceMs ?: JSONObject.NULL)
+        .put("recognizerCreationMs", (recognizerReadyAtNs - recognizerStartedAtNs) / 1_000_000)
+        .put("recognizerReused", recognizerReused)
+        .put("recognitionMs", (textReadyAtNs - recognitionStartedAtNs) / 1_000_000)
+        .put("endToTextMs", (textReadyAtNs - recordingStoppedAtNs) / 1_000_000)
+        .put("endReason", if (vadEndDetectedAtNs != 0L) "vad"
+          else if (stopRequested.get()) "stop" else "limit")
+        .toString()
+      Log.i(TIMING_TAG, "$TIMING_PREFIX$timing")
+      ProgressBus.send("asr", 1.0, "$TIMING_PREFIX$timing")
+      ProgressBus.send("asr", 1.0, "Готово")
+      return Result(recognized.text, recognized.segment, durationMs, audioUri)
     }
 
     private fun writeWav(context: Context, samples: FloatArray, filename: String = "naslukh-last-phrase.wav"): String {

@@ -20,6 +20,10 @@ class NaslukhSpeechModule : Module() {
 
     Events("onProgress")
 
+    OnDestroy {
+      LiveListen.onModuleDestroy()
+    }
+
     AsyncFunction("ensureModel") { modelId: String ->
       val ctx = appContext.reactContext
         ?: throw Exception("React context недоступен")
