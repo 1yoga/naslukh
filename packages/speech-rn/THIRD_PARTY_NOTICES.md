@@ -18,7 +18,7 @@ Converted model: https://huggingface.co/csukuangfj/sherpa-onnx-nemo-transducer-p
 
 ## Silero VAD model
 
-The separately downloaded `silero_vad.onnx` is from the Silero Team, licensed under MIT. Its copyright and permission notice follow. The current model archive does not contain a separate Silero license file, so preserve this notice when redistributing that archive or the model.
+The separately downloaded `silero_vad.onnx` is from the Silero Team, licensed under MIT. Its copyright and permission notice follow. The versioned `naslukh-models-0.1.0.zip` archive includes this notice as `naslukh-models/SILERO_VAD_LICENSE.txt`; preserve it when redistributing the model.
 
 Source: https://github.com/snakers4/silero-vad/blob/master/LICENSE
 

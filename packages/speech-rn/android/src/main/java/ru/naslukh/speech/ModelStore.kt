@@ -21,10 +21,10 @@ object ModelStore {
   private const val GIGAAM_DIR_NAME =
     "sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16"
 
-  /** Cloudflare R2 / custom domain — залей dist/naslukh-models.zip */
-  const val MODELS_ZIP_URL = "https://models.1yoga.link/naslukh-models.zip"
+  /** Cloudflare R2 / custom domain — залей dist/naslukh-models-0.1.0.zip */
+  const val MODELS_ZIP_URL = "https://models.1yoga.link/naslukh-models-0.1.0.zip"
   const val MODELS_ZIP_SHA256 =
-    "721ff66b9577deb3fe34d140aa45a52e7be91681075619ca71c9fc40b124e38f"
+    "52e97046661f73b28434c546274854cc1496c97276ba6be6b020749f21c2ab4f"
 
   private const val ENCODER_MIN_BYTES = 100_000_000L
   private const val SILERO_MIN_BYTES = 100_000L
