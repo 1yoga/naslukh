@@ -25,6 +25,12 @@ apps/asr-android/android/.kotlin/
 apps/asr-android/android/**/build/
 apps/asr-android/.apk-scan/
 
+# Local microphone captures and stability diagnostics
+naslukh-last-phrase.wav
+naslukh-pre-vad.wav
+naslukh-stress-*.wav
+naslukh-stability-*.csv
+
 # Android / Gradle (RN packages, e.g. speech-rn)
 **/android/build/
 **/android/.cxx/
@@ -34,6 +40,8 @@ apps/asr-android/.apk-scan/
 *.aab
 *.dex
 *.hprof
+*.heapdump
+*.trace
 
 # Editor directories and files
 .vscode/*
