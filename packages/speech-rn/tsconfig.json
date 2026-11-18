@@ -1,12 +1,15 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
+    "module": "Node16",
+    "moduleResolution": "Node16",
     "strict": true,
     "skipLibCheck": true,
     "jsx": "react-native",
-    "noEmit": true
+    "declaration": true,
+    "noEmitOnError": true,
+    "rootDir": "src",
+    "outDir": "dist"
   },
   "include": ["src/**/*.ts"]
 }
