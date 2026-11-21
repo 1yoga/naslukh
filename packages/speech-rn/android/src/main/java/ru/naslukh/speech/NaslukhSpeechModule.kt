@@ -8,7 +8,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Нативный мост Android: ensureModel + transcribeFile + события прогресса.
+ * Нативный мост Android: ensureModel + transcribeFile + listenOnce + монитор речи,
+ * события прогресса и живого прослушивания (уровень, пауза в реплике, речь во время воспроизведения).
  */
 class NaslukhSpeechModule : Module() {
   companion object {
@@ -18,10 +19,32 @@ class NaslukhSpeechModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("NaslukhSpeech")
 
-    Events("onProgress")
+    Events(
+      "onProgress",
+      NaslukhEvents.AUDIO_LEVEL,
+      NaslukhEvents.SPEECH_PAUSE,
+      NaslukhEvents.SPEECH_RESUME,
+      NaslukhEvents.MONITOR_SPEECH,
+    )
+
+    OnCreate {
+      NaslukhEvents.sink = { name, body ->
+        try {
+          sendEvent(name, body)
+        } catch (e: Exception) {
+          Log.w(TAG, "sendEvent $name failed", e)
+        }
+      }
+    }
 
     OnDestroy {
+      NaslukhEvents.sink = null
+      SpeechMonitors.onModuleDestroy()
       LiveListen.onModuleDestroy()
+    }
+
+    Function("isEchoCancellationAvailable") {
+      Mic.echoCancellationAvailable()
     }
 
     AsyncFunction("ensureModel") { modelId: String ->
@@ -64,6 +87,7 @@ class NaslukhSpeechModule : Module() {
         }
       }
       mapOf(
+        "sessionId" to result.sessionId,
         "text" to result.text,
         "durationMs" to result.durationMs,
         "audioUri" to result.audioUri,
@@ -85,6 +109,16 @@ class NaslukhSpeechModule : Module() {
 
     AsyncFunction("stopListenOnce") {
       LiveListen.stop()
+    }
+
+    AsyncFunction("startSpeechMonitor") { options: Map<String, Any?>? ->
+      val ctx = appContext.reactContext
+        ?: throw Exception("React context недоступен")
+      SpeechMonitors.start(ctx, SpeechMonitors.Options.fromMap(options))
+    }
+
+    AsyncFunction("stopSpeechMonitor") { monitorId: String? ->
+      SpeechMonitors.stop(monitorId)
     }
   }
 

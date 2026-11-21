@@ -1,9 +1,9 @@
 {
   "name": "@naslukh/speech-rn",
-  "version": "0.1.0",
-  "description": "Offline Russian speech recognition for Expo and React Native on Android",
+  "version": "0.2.0",
+  "description": "Offline Russian speech recognition for Expo and React Native on Android: GigaAM v3 + Silero VAD, live listening with audio level, in-utterance pauses, echo cancellation and barge-in",
   "license": "MIT",
-  "keywords": ["expo", "react-native", "speech-recognition", "offline", "russian", "android"],
+  "keywords": ["expo", "react-native", "speech-recognition", "offline", "russian", "android", "vad", "voice-activity-detection", "barge-in", "echo-cancellation", "voice-assistant"],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/1yoga/naslukh.git",
@@ -33,6 +33,7 @@
     "android/src/main/java",
     "expo-module.config.json",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"
   ],

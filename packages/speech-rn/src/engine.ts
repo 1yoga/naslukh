@@ -1,20 +1,27 @@
 import { Platform } from "react-native"
 import { requireOptionalNativeModule } from "expo-modules-core"
 import type {
+  AudioLevelEvent,
   FileSource,
   JobHandler,
   JobState,
   ListenOnceOptions,
   ListenOnceResult,
+  MonitorSpeechEvent,
+  MonitorSpeechOptions,
   Progress,
   Recording,
   Segment,
   SpeechCapabilities,
   SpeechEngine,
+  SpeechMonitor,
+  SpeechPauseEvent,
+  SpeechResumeEvent,
   TranscriptionJob,
   TranscriptionResult,
 } from "./types"
 import { correctAsrText } from "./corrector"
+import { addNativeEventListener } from "./events"
 import { GIGAAM_MODEL_ID } from "./types"
 
 type NativeSpeech = {
@@ -22,6 +29,7 @@ type NativeSpeech = {
   listenOnce(
     options?: Record<string, unknown>,
   ): Promise<{
+    sessionId?: string
     text: string
     segments: Segment[]
     durationMs: number
@@ -29,6 +37,9 @@ type NativeSpeech = {
   }>
   cancelListenOnce(): Promise<boolean>
   stopListenOnce(): Promise<boolean>
+  startSpeechMonitor?(options?: Record<string, unknown>): Promise<string>
+  stopSpeechMonitor?(monitorId: string | null): Promise<boolean>
+  isEchoCancellationAvailable?(): boolean
   transcribeFile(
     uri: string,
     options?: Record<string, unknown>,
@@ -42,6 +53,39 @@ type NativeSpeech = {
 }
 
 const native = requireOptionalNativeModule<NativeSpeech>("NaslukhSpeech")
+
+/** onAudioLevel шлётся, только если на него кто-то подписан (или audioLevelIntervalMs задан явно). */
+let audioLevelListeners = 0
+const DEFAULT_AUDIO_LEVEL_INTERVAL_MS = 66
+
+function echoCancellationAvailable(): boolean {
+  try {
+    return Boolean(native?.isEchoCancellationAvailable?.())
+  } catch {
+    return false
+  }
+}
+
+class NativeSpeechMonitor implements SpeechMonitor {
+  private stopped = false
+
+  constructor(readonly id: string) {}
+
+  onSpeech(handler: (event: MonitorSpeechEvent) => void): () => void {
+    let fired = false
+    return addNativeEventListener<MonitorSpeechEvent>("onMonitorSpeech", (event) => {
+      if (fired || event.monitorId !== this.id) return
+      fired = true
+      handler({ monitorId: event.monitorId, speechMs: Number(event.speechMs) || 0 })
+    })
+  }
+
+  async stop(): Promise<void> {
+    if (this.stopped) return
+    this.stopped = true
+    await native?.stopSpeechMonitor?.(this.id)
+  }
+}
 
 type HandlerMap = {
   progress: JobHandler<Progress>[]
@@ -173,6 +217,10 @@ export function createSpeechEngine(
         models: [GIGAAM_MODEL_ID],
         partialResults: false,
         tts: false,
+        audioLevel: Boolean(native?.listenOnce),
+        speechPause: Boolean(native?.listenOnce),
+        speechMonitor: Boolean(native?.startSpeechMonitor),
+        echoCancellation: echoCancellationAvailable(),
       }
     },
 
@@ -275,6 +323,11 @@ export function createSpeechEngine(
         startTimeoutSec: options.startTimeoutSec ?? 15,
         maxDurationSec: options.maxDurationSec ?? 30,
         saveAudio: options.saveAudio ?? false,
+        audioLevelIntervalMs:
+          options.audioLevelIntervalMs ?? (audioLevelListeners > 0 ? DEFAULT_AUDIO_LEVEL_INTERVAL_MS : 0),
+        speechPauseMs: options.speechPauseMs ?? 0,
+        echoCancellation: options.echoCancellation ?? false,
+        continueFromMonitor: options.continueFromMonitor ?? null,
       })
       const brands = options.hotwords ?? []
       const correct = (text: string) =>
@@ -284,6 +337,7 @@ export function createSpeechEngine(
           brandMinScore: options.brandMinScore ?? 0.72,
         })
       return {
+        ...(result.sessionId ? { sessionId: result.sessionId } : {}),
         text: correct(result.text),
         durationMs: result.durationMs,
         ...(result.audioUri ? { audioUri: result.audioUri } : {}),
@@ -309,6 +363,44 @@ export function createSpeechEngine(
 
     record(_options?: { language: "ru" }): Recording {
       throw new Error("Запись микрофона — в приложении, не в speech-rn")
+    },
+
+    addAudioLevelListener(listener: (event: AudioLevelEvent) => void): () => void {
+      audioLevelListeners += 1
+      const remove = addNativeEventListener<AudioLevelEvent>("onAudioLevel", listener)
+      let active = true
+      return () => {
+        if (!active) return
+        active = false
+        audioLevelListeners -= 1
+        remove()
+      }
+    },
+
+    addSpeechPauseListener(listener: (event: SpeechPauseEvent) => void): () => void {
+      return addNativeEventListener<SpeechPauseEvent>("onSpeechPause", listener)
+    },
+
+    addSpeechResumeListener(listener: (event: SpeechResumeEvent) => void): () => void {
+      return addNativeEventListener<SpeechResumeEvent>("onSpeechResume", listener)
+    },
+
+    async monitorSpeech(options: MonitorSpeechOptions = {}): Promise<SpeechMonitor> {
+      if (Platform.OS !== "android") {
+        throw new Error("monitorSpeech пока поддерживается только на Android")
+      }
+      if (!native?.startSpeechMonitor) {
+        throw new Error(
+          "NaslukhSpeech без монитора речи: обновите нативную сборку до @naslukh/speech-rn 0.2.0",
+        )
+      }
+      const id = await native.startSpeechMonitor({
+        vadThreshold: options.vadThreshold ?? 0.6,
+        minSpeechMs: options.minSpeechMs ?? 300,
+        prerollMs: options.prerollMs ?? 600,
+        echoCancellation: options.echoCancellation ?? true,
+      })
+      return new NativeSpeechMonitor(id)
     },
   }
 }
