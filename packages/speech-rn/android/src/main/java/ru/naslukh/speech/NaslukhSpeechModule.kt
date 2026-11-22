@@ -25,6 +25,7 @@ class NaslukhSpeechModule : Module() {
       NaslukhEvents.SPEECH_PAUSE,
       NaslukhEvents.SPEECH_RESUME,
       NaslukhEvents.MONITOR_SPEECH,
+      NaslukhEvents.LISTEN_SEGMENT,
     )
 
     OnCreate {
@@ -91,14 +92,23 @@ class NaslukhSpeechModule : Module() {
         "text" to result.text,
         "durationMs" to result.durationMs,
         "audioUri" to result.audioUri,
-        "segments" to listOf(
+        "segments" to result.pieces.map { piece ->
           mapOf(
-            "startSample" to result.segment.startSample,
-            "endSample" to result.segment.endSample,
-            "text" to result.segment.text,
+            "startSample" to piece.startSample,
+            "endSample" to piece.endSample,
+            "text" to piece.text,
             "status" to "done",
             "modelVersion" to ModelStore.GIGAAM_MODEL_ID,
-          ),
+            // Чем закончился кусок: pause / forced / end. Нужно JS для склейки на стыках.
+            "boundary" to piece.boundary,
+          )
+        },
+        "timings" to mapOf(
+          "finalizeMs" to result.timings.finalizeMs,
+          "tailDecodeMs" to result.timings.tailDecodeMs,
+          "totalDecodeMs" to result.timings.totalDecodeMs,
+          "segments" to result.timings.segments,
+          "endSilenceMs" to result.timings.endSilenceMs,
         ),
       )
     }

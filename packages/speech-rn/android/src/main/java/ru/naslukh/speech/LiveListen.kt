@@ -7,6 +7,7 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.media.AudioRecord
 import android.net.Uri
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
@@ -17,8 +18,19 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
+import java.util.concurrent.Callable
+import java.util.concurrent.CancellationException
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Future
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.log10
@@ -46,6 +58,18 @@ object LiveListen {
   private const val PRE_VAD_CAPTURE_SAMPLES = 10 * SAMPLE_RATE
   private const val PRE_VAD_WAV = "naslukh-pre-vad.wav"
   private const val MAX_END_SILENCE_SEC = 3f
+  private const val DEFAULT_INCREMENTAL_PAUSE_MS = 400
+  private const val DEFAULT_MAX_SEGMENT_SEC = 8f
+  private const val DEFAULT_MIN_SEGMENT_SEC = 2f
+  /** Соседняя тишина, добавляемая к куску, разрезанному по паузе, с каждой стороны. */
+  private const val SEAM_PAD_MS = 200
+  /** Окно поиска самого тихого места при принудительном резе. */
+  private const val FORCED_CUT_SEARCH_SEC = 1.5f
+  /** Хвост после последнего реза короче этой речи не расшифровывается (шум, а не слова). */
+  private const val MIN_TAIL_SPEECH_SEC = 0.1f
+  const val BOUNDARY_PAUSE = "pause"
+  const val BOUNDARY_FORCED = "forced"
+  const val BOUNDARY_END = "end"
 
   private data class CachedRecognizer(
     val modelDir: String,
@@ -57,6 +81,49 @@ object LiveListen {
   private val cacheLock = Any()
   private var cachedRecognizer: CachedRecognizer? = null
   private var releaseWhenIdle = false
+
+  /**
+   * Единственный на процесс поток расшифровки (по очереди, одним экземпляром GigaAM) и замок,
+   * который держит каждый decode. Отменённая сессия может дорасшифровывать один кусок:
+   * следующая сессия встаёт в очередь за ним, а не запускает второй decode параллельно.
+   */
+  private object DecodeWorker {
+    val lock = ReentrantLock()
+
+    @Volatile
+    private var tid = 0
+    private const val LOW_PRIORITY = Process.THREAD_PRIORITY_DEFAULT + 2
+
+    private val executor = ThreadPoolExecutor(
+      1, 1, 30L, TimeUnit.SECONDS, LinkedBlockingQueue<Runnable>(),
+      ThreadFactory { task ->
+        Thread({
+          tid = Process.myTid()
+          try {
+            Process.setThreadPriority(LOW_PRIORITY)
+          } catch (_: Throwable) {
+          }
+          try {
+            task.run()
+          } finally {
+            tid = 0
+          }
+        }, "NaslukhDecode").apply { isDaemon = true }
+      },
+    ).apply { allowCoreThreadTimeOut(true) }
+
+    fun <T> submit(task: Callable<T>): Future<T> = executor.submit(task)
+
+    /** Пока реплика дожидается результата, поток расшифровки идёт с обычным приоритетом. */
+    fun setUrgent(urgent: Boolean) {
+      val id = tid
+      if (id == 0) return
+      try {
+        Process.setThreadPriority(id, if (urgent) Process.THREAD_PRIORITY_DEFAULT else LOW_PRIORITY)
+      } catch (_: Throwable) {
+      }
+    }
+  }
 
   data class Options(
     val vadThreshold: Float = 0.5f,
@@ -74,6 +141,14 @@ object LiveListen {
     val echoCancellation: Boolean = false,
     /** Продолжить реплику с захватом монитора речи (SpeechMonitors). */
     val continueFromMonitor: String? = null,
+    /** Расшифровывать реплику по ходу записи (по паузам внутри неё). false — как в 0.2.0. */
+    val incrementalDecode: Boolean = true,
+    /** Пауза внутри реплики, по которой режется кусок, мс. */
+    val incrementalPauseMs: Int = DEFAULT_INCREMENTAL_PAUSE_MS,
+    /** Принудительный рез длинной речи без пауз, с. */
+    val maxSegmentSec: Float = DEFAULT_MAX_SEGMENT_SEC,
+    /** Кусок короче не режем, копим дальше, с. */
+    val minSegmentSec: Float = DEFAULT_MIN_SEGMENT_SEC,
   ) {
     companion object {
       fun fromMap(raw: Map<String, Any?>?): Options {
@@ -98,15 +173,39 @@ object LiveListen {
             .let { if (it <= 0) 0 else it.coerceIn(100, 5000) },
           echoCancellation = raw["echoCancellation"] as? Boolean ?: false,
           continueFromMonitor = (raw["continueFromMonitor"] as? String)?.takeIf { it.isNotBlank() },
+          incrementalDecode = raw["incrementalDecode"] as? Boolean ?: true,
+          incrementalPauseMs = ((raw["incrementalPauseMs"] as? Number)?.toInt()
+            ?: DEFAULT_INCREMENTAL_PAUSE_MS).coerceIn(200, 2000),
+          maxSegmentSec = ((raw["maxSegmentSec"] as? Number)?.toFloat() ?: DEFAULT_MAX_SEGMENT_SEC)
+            .coerceIn(3f, 30f),
+          minSegmentSec = ((raw["minSegmentSec"] as? Number)?.toFloat() ?: DEFAULT_MIN_SEGMENT_SEC)
+            .coerceIn(0.5f, 10f),
         )
       }
     }
   }
 
+  /** Кусок реплики. boundary — чем закончился: pause / forced (рез в речи) / end (конец реплики). */
+  data class Piece(
+    val startSample: Int,
+    val endSample: Int,
+    val text: String,
+    val boundary: String,
+  )
+
+  data class Timings(
+    val finalizeMs: Long,
+    val tailDecodeMs: Long,
+    val totalDecodeMs: Long,
+    val segments: Int,
+    val endSilenceMs: Long,
+  )
+
   data class Result(
     val sessionId: String,
     val text: String,
-    val segment: AsrPipeline.SegmentOut,
+    val pieces: List<Piece>,
+    val timings: Timings,
     val durationMs: Long,
     val audioUri: String?,
   )
@@ -126,6 +225,9 @@ object LiveListen {
     return try {
       val handoff = options.continueFromMonitor?.let { SpeechMonitors.takeOver(it) }
       session.run(context.applicationContext, options, handoff)
+    } catch (e: Throwable) {
+      session.abortDecoder()
+      throw e
     } finally {
       try {
         session.close()
@@ -176,7 +278,10 @@ object LiveListen {
   private fun releaseCachedLocked() {
     val cached = cachedRecognizer
     cachedRecognizer = null
-    cached?.recognizer?.release()
+    if (cached != null) {
+      // Не освобождать модель посреди decode отменённой сессии.
+      DecodeWorker.lock.withLock { cached.recognizer.release() }
+    }
   }
 
   /** Останавливает захват или помечает текущий ASR как отменённый. */
@@ -193,6 +298,96 @@ object LiveListen {
     return true
   }
 
+  /** Очередь кусков одной сессии: расшифровка на DecodeWorker, результаты по порядку. */
+  private class IncrementalDecoder(
+    private val sessionId: String,
+    private val paths: ModelStore.Paths,
+    private val numThreads: Int,
+    private val cancelled: AtomicBoolean,
+  ) {
+    class Decoded(val text: String, val decodeMs: Long)
+
+    class Queued(
+      val startSample: Int,
+      val endSample: Int,
+      val boundary: String,
+      val tail: Boolean,
+      val future: Future<Decoded>,
+    )
+
+    private val queued = ArrayList<Queued>()
+    private val suppressed = AtomicBoolean(false)
+    val recognizerCreationMs = AtomicLong(0)
+
+    @Volatile
+    var recognizerReused = true
+
+    private fun active(): Boolean = !cancelled.get() && !suppressed.get()
+
+    fun submit(samples: FloatArray, startSample: Int, endSample: Int, boundary: String, tail: Boolean) {
+      synchronized(queued) {
+        val index = queued.size
+        val future = DecodeWorker.submit(Callable { decode(index, samples, startSample, endSample) })
+        queued.add(Queued(startSample, endSample, boundary, tail, future))
+      }
+    }
+
+    private fun decode(index: Int, samples: FloatArray, startSample: Int, endSample: Int): Decoded {
+      if (!active()) throw IllegalStateException(CANCELLED_MESSAGE)
+      val creationStartedAtNs = SystemClock.elapsedRealtimeNanos()
+      val (recognizer, reused) = recognizerFor(paths, numThreads)
+      val decodeStartedAtNs = SystemClock.elapsedRealtimeNanos()
+      recognizerCreationMs.addAndGet((decodeStartedAtNs - creationStartedAtNs) / 1_000_000)
+      if (!reused) recognizerReused = false
+      val text = try {
+        DecodeWorker.lock.withLock {
+          AsrPipeline.recognizeUtterance(
+            recognizer = recognizer,
+            samples = samples,
+            isCancelled = { !active() },
+          ).text
+        }
+      } catch (e: Throwable) {
+        if (active()) discardRecognizer(recognizer)
+        throw e
+      }
+      val decodeMs = (SystemClock.elapsedRealtimeNanos() - decodeStartedAtNs) / 1_000_000
+      NaslukhEvents.sendIf(
+        { active() },
+        NaslukhEvents.LISTEN_SEGMENT,
+        mapOf(
+          "sessionId" to sessionId,
+          "index" to index,
+          "text" to text,
+          "startMs" to startSample.toLong() * 1000L / SAMPLE_RATE,
+          "endMs" to endSample.toLong() * 1000L / SAMPLE_RATE,
+        ),
+      )
+      return Decoded(text, decodeMs)
+    }
+
+    /** Ждёт все поставленные куски; результаты по порядку постановки. */
+    fun await(): List<Pair<Queued, Decoded>> {
+      val snapshot = synchronized(queued) { queued.toList() }
+      return snapshot.map { item ->
+        val decoded = try {
+          item.future.get()
+        } catch (e: CancellationException) {
+          throw IllegalStateException(CANCELLED_MESSAGE)
+        } catch (e: ExecutionException) {
+          throw e.cause ?: e
+        }
+        item to decoded
+      }
+    }
+
+    /** Снимает очередь и гасит события куска этой сессии. */
+    fun abort() {
+      suppressed.set(true)
+      synchronized(queued) { queued.forEach { it.future.cancel(false) } }
+    }
+  }
+
   private class Session {
     val id: String = UUID.randomUUID().toString()
     private val cancelled = AtomicBoolean(false)
@@ -201,6 +396,13 @@ object LiveListen {
 
     @Volatile
     private var mic: Mic? = null
+
+    @Volatile
+    private var decoder: IncrementalDecoder? = null
+
+    fun abortDecoder() {
+      decoder?.abort()
+    }
 
     @SuppressLint("MissingPermission")
     fun run(context: Context, options: Options, handoff: SpeechMonitors.Handoff? = null): Result {
@@ -253,15 +455,26 @@ object LiveListen {
         )
         // Отдельный экземпляр только для вероятности речи по окнам (compute): основной VAD держит
         // речь «включённой» до vadMinSilenceSec, а короткую паузу внутри реплики не показывает.
-        val pauseVad = if (options.speechPauseMs > 0 &&
-            options.speechPauseMs < options.vadMinSilenceSec * 1000f) {
+        val pauseEventsEnabled = options.speechPauseMs > 0 &&
+          options.speechPauseMs < options.vadMinSilenceSec * 1000f
+        // Пауза для реза должна быть короче паузы конца реплики, иначе VAD завершит реплику раньше.
+        val incremental = options.incrementalDecode &&
+          options.incrementalPauseMs < options.vadMinSilenceSec * 1000f
+        if (options.incrementalDecode && !incremental) {
+          Log.w(TIMING_TAG, "incrementalPauseMs=${options.incrementalPauseMs} не меньше " +
+            "vadMinSilenceSec=${options.vadMinSilenceSec}: расшифровка по ходу реплики выключена")
+        }
+        // Один оконный Silero на оба потребителя (событие паузы и рез куска): вероятность речи
+        // считается один раз на окно, пороги и счётчики тишины у них свои.
+        val pauseVad = if (pauseEventsEnabled || incremental) {
           Vad(
             assetManager = null,
             config = VadModelConfig(
               sileroVadModelConfig = SileroVadModelConfig(
                 model = paths.silero.absolutePath,
                 threshold = options.vadThreshold,
-                minSilenceDuration = options.speechPauseMs / 1000f,
+                minSilenceDuration = (if (pauseEventsEnabled) options.speechPauseMs
+                  else options.incrementalPauseMs) / 1000f,
                 minSpeechDuration = options.vadMinSpeechSec,
                 windowSize = WINDOW,
                 maxSpeechDuration = options.maxDurationSec,
@@ -297,6 +510,77 @@ object LiveListen {
         var frameSpeech = false
         var pauseSilenceSamples = 0
         var paused = false
+
+        // Расшифровка по ходу реплики: индексы — в samples utterance (включая pre-roll).
+        val pauseSamples = options.incrementalPauseMs * SAMPLE_RATE / 1000
+        val seamPadSamples = min(SEAM_PAD_MS, options.incrementalPauseMs / 2) * SAMPLE_RATE / 1000
+        val minSegSamples = (options.minSegmentSec * SAMPLE_RATE).toInt()
+        val maxSegSamples = (options.maxSegmentSec * SAMPLE_RATE).toInt()
+        val searchSamples = (FORCED_CUT_SEARCH_SEC * SAMPLE_RATE).toInt()
+        var lastCut = 0
+        var lastCutWasPause = false
+        var cutCount = 0
+        var silenceRunStart = -1
+        var runCutDone = false
+        // Накопленная речь (по решению VAD на окнах) после последнего реза; по ней решаем, нужен ли хвост.
+        var speechSinceCut = 0
+        // Решения VAD по последним окнам: после принудительного реза речь в остатке считаем по ним.
+        val recentSpeech = BooleanArray(64)
+        var recentCount = 0
+
+        /** Начало аудио куска: после реза по паузе слева есть своя тишина — берём её с запасом. */
+        fun chunkFrom(): Int = if (lastCutWasPause) max(0, lastCut - seamPadSamples) else lastCut
+
+        fun cutAt(pos: Int, pause: Boolean) {
+          val dec = decoder ?: return
+          val to = if (pause) min(utterance.size, pos + seamPadSamples) else pos
+          dec.submit(
+            utterance.copyRange(chunkFrom(), to),
+            lastCut,
+            pos,
+            if (pause) BOUNDARY_PAUSE else BOUNDARY_FORCED,
+            tail = false,
+          )
+          lastCut = pos
+          lastCutWasPause = pause
+          cutCount += 1
+        }
+
+        fun trackCut(speechNow: Boolean) {
+          val size = utterance.size
+          recentSpeech[recentCount % recentSpeech.size] = speechNow
+          recentCount += 1
+          if (speechNow) {
+            silenceRunStart = -1
+            runCutDone = false
+            speechSinceCut += WINDOW
+          } else {
+            if (silenceRunStart < 0) {
+              silenceRunStart = size - WINDOW
+              runCutDone = false
+            }
+            if (!runCutDone && size - silenceRunStart >= pauseSamples) {
+              runCutDone = true
+              // Рез — в середине тишины: слева и справа остаётся по половине паузы.
+              val pos = silenceRunStart + pauseSamples / 2
+              if (pos - lastCut >= minSegSamples) {
+                cutAt(pos, pause = true)
+                speechSinceCut = 0
+              }
+            }
+          }
+          if (size - lastCut >= maxSegSamples) {
+            // Речь без пауз: рез в самом тихом месте последних 1,5 с, чтобы хвост не рос.
+            val pos = utterance.quietestPoint(max(lastCut + WINDOW, size - searchSamples), size, 480, 160)
+            cutAt(pos, pause = false)
+            var speechFrames = 0
+            val tailFrames = min(recentSpeech.size, (size - pos + WINDOW - 1) / WINDOW)
+            for (k in 1..tailFrames) {
+              if (recentSpeech[Math.floorMod(recentCount - k, recentSpeech.size)]) speechFrames += 1
+            }
+            speechSinceCut = speechFrames * WINDOW
+          }
+        }
 
         fun logInputLevel(reason: String) {
           if (levelSamples == 0) return
@@ -340,6 +624,8 @@ object LiveListen {
           val speechNow = detector.compute(frame) >= options.vadThreshold
           frameSpeech = speechNow
           if (!speechStarted) return
+          if (incremental) trackCut(speechNow)
+          if (!pauseEventsEnabled) return
           if (speechNow) {
             pauseSilenceSamples = 0
             if (paused) {
@@ -374,6 +660,9 @@ object LiveListen {
             speechDetectedAtNs = SystemClock.elapsedRealtimeNanos()
             speechStartedAt = SystemClock.elapsedRealtime()
             utterance.append(preRoll.snapshot())
+            if (incremental) {
+              decoder = IncrementalDecoder(id, paths, options.numThreads, cancelled)
+            }
             ProgressBus.send("listen", 0.2, "Речь обнаружена")
           } else if (speechStarted) {
             utterance.append(frame)
@@ -495,6 +784,18 @@ object LiveListen {
           if (!speechStarted || utterance.size < (MIN_UTTERANCE_SEC * SAMPLE_RATE).toInt()) {
             throw IllegalStateException("Речь слишком короткая")
           }
+          val dec = decoder
+          if (dec != null) {
+            // Хвост после последнего реза; без резов — вся реплика одним куском, как в 0.2.0.
+            // Хвост без речи (только тишина до решения VAD) не расшифровывается.
+            val minTailSamples = (MIN_TAIL_SPEECH_SEC * SAMPLE_RATE).toInt()
+            if (cutCount == 0) {
+              dec.submit(utterance.toArray(), 0, utterance.size, BOUNDARY_END, tail = true)
+            } else if (speechSinceCut >= minTailSamples) {
+              dec.submit(utterance.copyRange(chunkFrom(), utterance.size), lastCut, utterance.size,
+                BOUNDARY_END, tail = true)
+            }
+          }
           utterance.toArray()
         } finally {
           vad.release()
@@ -507,24 +808,66 @@ object LiveListen {
 
       checkCancelled()
       val durationMs = (samples.size * 1000L) / SAMPLE_RATE
-      ProgressBus.send("asr", 0.1, "Подготовка GigaAM…")
-      val recognizerStartedAtNs = SystemClock.elapsedRealtimeNanos()
-      val (recognizer, recognizerReused) = LiveListen.recognizerFor(paths, options.numThreads)
-      val recognizerReadyAtNs = SystemClock.elapsedRealtimeNanos()
-      checkCancelled()
-      ProgressBus.send("asr", 0.35, "Распознаём фразу…")
-      val recognitionStartedAtNs = SystemClock.elapsedRealtimeNanos()
-      val recognized = try {
-        AsrPipeline.recognizeUtterance(
-          recognizer = recognizer,
-          samples = samples,
-          isCancelled = { cancelled.get() },
-        )
-      } catch (e: Throwable) {
-        LiveListen.discardRecognizer(recognizer)
-        throw e
+      val activeDecoder = decoder
+      var recognizerCreationMs = 0L
+      var recognizerReused = true
+      val textReadyAtNs: Long
+      val pieces: List<Piece>
+      var tailDecodeMs = 0L
+      var totalDecodeMs = 0L
+      if (activeDecoder == null) {
+        // incrementalDecode = false: вся реплика одним куском после конца записи, как в 0.2.0.
+        ProgressBus.send("asr", 0.1, "Подготовка GigaAM…")
+        val recognizerStartedAtNs = SystemClock.elapsedRealtimeNanos()
+        val (recognizer, reused) = LiveListen.recognizerFor(paths, options.numThreads)
+        val recognizerReadyAtNs = SystemClock.elapsedRealtimeNanos()
+        recognizerCreationMs = (recognizerReadyAtNs - recognizerStartedAtNs) / 1_000_000
+        recognizerReused = reused
+        checkCancelled()
+        ProgressBus.send("asr", 0.35, "Распознаём фразу…")
+        val recognitionStartedAtNs = SystemClock.elapsedRealtimeNanos()
+        val recognized = try {
+          DecodeWorker.lock.withLock {
+            AsrPipeline.recognizeUtterance(
+              recognizer = recognizer,
+              samples = samples,
+              isCancelled = { cancelled.get() },
+            )
+          }
+        } catch (e: Throwable) {
+          LiveListen.discardRecognizer(recognizer)
+          throw e
+        }
+        textReadyAtNs = SystemClock.elapsedRealtimeNanos()
+        tailDecodeMs = (textReadyAtNs - recognitionStartedAtNs) / 1_000_000
+        totalDecodeMs = tailDecodeMs
+        pieces = listOf(Piece(0, samples.size, recognized.text, BOUNDARY_END))
+      } else {
+        ProgressBus.send("asr", 0.35, "Дорасшифровываем…")
+        DecodeWorker.setUrgent(true)
+        val done = try {
+          activeDecoder.await()
+        } catch (e: Throwable) {
+          activeDecoder.abort()
+          throw e
+        } finally {
+          DecodeWorker.setUrgent(false)
+        }
+        textReadyAtNs = SystemClock.elapsedRealtimeNanos()
+        recognizerCreationMs = activeDecoder.recognizerCreationMs.get()
+        recognizerReused = activeDecoder.recognizerReused
+        totalDecodeMs = done.sumOf { it.second.decodeMs }
+        tailDecodeMs = done.filter { it.first.tail }.sumOf { it.second.decodeMs }
+        pieces = done.mapIndexed { index, (queued, decoded) ->
+          Piece(
+            queued.startSample,
+            queued.endSample,
+            decoded.text,
+            if (index == done.lastIndex) BOUNDARY_END else queued.boundary,
+          )
+        }
       }
-      val textReadyAtNs = SystemClock.elapsedRealtimeNanos()
+      val text = joinPieces(pieces)
       checkCancelled()
       val audioUri = if (options.saveAudio) writeWav(context, samples) else null
       if (preVadCapture != null && preVadCapture.size > 0) {
@@ -532,6 +875,15 @@ object LiveListen {
         Log.i(INPUT_TAG, "preVadWav=$rawUri durationMs=${preVadCapture.size * 1000L / SAMPLE_RATE}")
       }
       checkCancelled()
+      // Момент решения «реплика кончилась»: VAD; при stop / лимите — выход из цикла записи.
+      val endDecisionAtNs = if (vadEndDetectedAtNs != 0L) vadEndDetectedAtNs else recordingStoppedAtNs
+      val timings = Timings(
+        finalizeMs = (textReadyAtNs - endDecisionAtNs) / 1_000_000,
+        tailDecodeMs = tailDecodeMs,
+        totalDecodeMs = totalDecodeMs,
+        segments = pieces.size,
+        endSilenceMs = trailingSilenceMs ?: 0L,
+      )
       val timing = JSONObject()
         .put("microphonePreparationMs", (microphoneReadyAtNs - nativeStartedAtNs) / 1_000_000)
         .put("firstAudioReadMs", (firstAudioReadAtNs - microphoneReadyAtNs) / 1_000_000)
@@ -539,18 +891,31 @@ object LiveListen {
         .put("utteranceEndDetectionMs", if (vadEndDetectedAtNs == 0L) JSONObject.NULL
           else (vadEndDetectedAtNs - speechDetectedAtNs) / 1_000_000)
         .put("trailingSilenceMs", trailingSilenceMs ?: JSONObject.NULL)
-        .put("recognizerCreationMs", (recognizerReadyAtNs - recognizerStartedAtNs) / 1_000_000)
+        .put("recognizerCreationMs", recognizerCreationMs)
         .put("recognizerReused", recognizerReused)
-        .put("recognitionMs", (textReadyAtNs - recognitionStartedAtNs) / 1_000_000)
+        .put("recognitionMs", totalDecodeMs)
         .put("endToTextMs", (textReadyAtNs - recordingStoppedAtNs) / 1_000_000)
         .put("endReason", if (vadEndDetectedAtNs != 0L) "vad"
           else if (stopRequested.get()) "stop" else "limit")
+        .put("incremental", activeDecoder != null)
+        .put("finalizeMs", timings.finalizeMs)
+        .put("tailDecodeMs", timings.tailDecodeMs)
+        .put("totalDecodeMs", timings.totalDecodeMs)
+        .put("segments", timings.segments)
+        .put("endSilenceMs", timings.endSilenceMs)
         .toString()
       Log.i(TIMING_TAG, "$TIMING_PREFIX$timing")
       ProgressBus.send("asr", 1.0, "$TIMING_PREFIX$timing")
       ProgressBus.send("asr", 1.0, "Готово")
-      return Result(id, recognized.text, recognized.segment, durationMs, audioUri)
+      return Result(id, text, pieces, timings, durationMs, audioUri)
     }
+
+    private fun joinPieces(pieces: List<Piece>): String =
+      pieces.map { it.text.trim() }
+        .filter { it.isNotEmpty() }
+        .joinToString(" ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
 
     private fun writeWav(context: Context, samples: FloatArray, filename: String = "naslukh-last-phrase.wav"): String {
       val dataBytes = samples.size * 2
@@ -577,6 +942,7 @@ object LiveListen {
 
     fun cancel() {
       cancelled.set(true)
+      decoder?.abort()
       requestStop()
     }
 
@@ -626,6 +992,29 @@ object LiveListen {
     }
 
     fun toArray(): FloatArray = data.copyOf(size)
+
+    fun copyRange(from: Int, to: Int): FloatArray =
+      data.copyOfRange(from.coerceIn(0, size), to.coerceIn(0, size))
+
+    /** Центр самого тихого окна [win] отсчётов (по энергии) в [from, to). */
+    fun quietestPoint(from: Int, to: Int, win: Int, hop: Int): Int {
+      val start = from.coerceIn(0, size)
+      val end = to.coerceIn(start, size)
+      if (end - start <= win) return (start + end) / 2
+      var bestAt = start
+      var bestEnergy = Double.MAX_VALUE
+      var at = start
+      while (at + win <= end) {
+        var energy = 0.0
+        for (i in at until at + win) energy += data[i].toDouble() * data[i].toDouble()
+        if (energy < bestEnergy) {
+          bestEnergy = energy
+          bestAt = at
+        }
+        at += hop
+      }
+      return bestAt + win / 2
+    }
 
     private fun ensureCapacity(required: Int) {
       if (required <= data.size) return

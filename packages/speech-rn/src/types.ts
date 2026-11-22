@@ -36,6 +36,33 @@ export interface ListenOnceResult {
   durationMs: number
   /** Локальный WAV в кэше приложения, если запрошен saveAudio. */
   audioUri?: string
+  /** Задержка и расшифровка по кускам; на Android приходит всегда. С 0.3.0. */
+  timings?: ListenTimings
+}
+
+/** Измерения `listenOnce()` для расчёта задержки без догадок. С 0.3.0. */
+export interface ListenTimings {
+  /** От решения VAD «реплика кончилась» до готового текста, мс. Главная цифра. Считается в нативной части, без пост-правки корректором в JS. */
+  finalizeMs: number
+  /** Расшифровка последнего куска, мс; 0, если хвост состоял из тишины. */
+  tailDecodeMs: number
+  /** Сумма расшифровки всех кусков, мс. */
+  totalDecodeMs: number
+  /** Сколько кусков. */
+  segments: number
+  /** Сколько тишины ждали до решения VAD, мс (≈ vadMinSilenceSec). */
+  endSilenceMs: number
+}
+
+/** Кусок реплики расшифрован, реплика ещё идёт. Текст черновой: окончательный — в результате. С 0.3.0. */
+export interface ListenSegmentEvent {
+  sessionId: string
+  /** Номер куска с нуля. */
+  index: number
+  text: string
+  /** Границы куска от начала захвата, мс. */
+  startMs: number
+  endMs: number
 }
 
 export interface Progress {
@@ -70,7 +97,8 @@ export interface SpeechCapabilities {
   threads: 1 | 2
   maxRecommendedDurationSec: number
   models: string[]
-  partialResults: false
+  /** Есть событие куска addListenSegmentListener. С 0.3.0 — true (в 0.2.0 было false). */
+  partialResults: boolean
   tts: false
   /** Уровень сигнала во время listenOnce (addAudioLevelListener). С 0.2.0. */
   audioLevel: boolean
@@ -80,6 +108,8 @@ export interface SpeechCapabilities {
   speechMonitor: boolean
   /** Устройство даёт AcousticEchoCanceler для echoCancellation. */
   echoCancellation: boolean
+  /** Расшифровка реплики по ходу записи (incrementalDecode). С 0.3.0. */
+  incrementalDecode: boolean
 }
 
 export interface FileSource {
@@ -113,6 +143,21 @@ export interface ListenOnceOptions extends TranscribeOptions {
   echoCancellation?: boolean
   /** Продолжить реплику с захвата монитора речи (SpeechMonitor.id): микрофон и начало фразы не теряются. */
   continueFromMonitor?: string
+  /**
+   * Расшифровывать реплику по ходу записи: куски режутся по паузам внутри реплики и расшифровываются
+   * в фоне, после конца речи остаётся только последний кусок. `false` — вся реплика одним куском
+   * после конца речи, как в 0.2.0. По умолчанию true. С 0.3.0.
+   */
+  incrementalDecode?: boolean
+  /**
+   * Пауза внутри реплики, по которой режется кусок, мс (200–2000). По умолчанию 400.
+   * Не меньше `vadMinSilenceSec`·1000 — расшифровка по ходу реплики для этого вызова выключается.
+   */
+  incrementalPauseMs?: number
+  /** Принудительный рез сплошной речи без пауз, с (3–30). По умолчанию 8. */
+  maxSegmentSec?: number
+  /** Кусок короче не режем, копим дальше, с (0,5–10). По умолчанию 2. */
+  minSegmentSec?: number
 }
 
 /** Уровень сигнала во время listenOnce. */
@@ -184,6 +229,11 @@ export interface SpeechEngine {
   addSpeechPauseListener(listener: (event: SpeechPauseEvent) => void): Unsubscribe
   /** Речь возобновилась после паузы. С 0.2.0. */
   addSpeechResumeListener(listener: (event: SpeechResumeEvent) => void): Unsubscribe
+  /**
+   * Кусок реплики расшифрован, реплика ещё идёт (нужен incrementalDecode). Текст черновой.
+   * После cancelListenOnce() события этой сессии не приходят. С 0.3.0.
+   */
+  addListenSegmentListener(listener: (event: ListenSegmentEvent) => void): Unsubscribe
   /**
    * Слушать микрофон, пока приложение воспроизводит речь, и сообщить, когда пользователь заговорил.
    * Одновременно с listenOnce не работает: listenOnce({ continueFromMonitor }) забирает захват монитора. С 0.2.0.

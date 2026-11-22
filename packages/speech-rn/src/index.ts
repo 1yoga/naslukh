@@ -5,6 +5,8 @@ export type { CorrectorOptions } from "./corrector"
 export { addNaslukhProgressListener } from "./events"
 export type { TranscribeOptions } from "./options"
 export { GIGAAM_MODEL_ID } from "./types"
+export { joinSegmentTexts } from "./join"
+export type { JoinPiece, SegmentBoundary } from "./join"
 export type {
   AudioLevelEvent,
   FileSource,
@@ -12,6 +14,8 @@ export type {
   JobState,
   ListenOnceOptions,
   ListenOnceResult,
+  ListenSegmentEvent,
+  ListenTimings,
   MonitorSpeechEvent,
   MonitorSpeechOptions,
   Progress,

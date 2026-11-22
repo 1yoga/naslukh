@@ -7,6 +7,8 @@ import type {
   JobState,
   ListenOnceOptions,
   ListenOnceResult,
+  ListenSegmentEvent,
+  ListenTimings,
   MonitorSpeechEvent,
   MonitorSpeechOptions,
   Progress,
@@ -22,6 +24,8 @@ import type {
 } from "./types"
 import { correctAsrText } from "./corrector"
 import { addNativeEventListener } from "./events"
+import { joinSegmentTexts } from "./join"
+import type { SegmentBoundary } from "./join"
 import { GIGAAM_MODEL_ID } from "./types"
 
 type NativeSpeech = {
@@ -31,9 +35,10 @@ type NativeSpeech = {
   ): Promise<{
     sessionId?: string
     text: string
-    segments: Segment[]
+    segments: (Segment & { boundary?: SegmentBoundary })[]
     durationMs: number
     audioUri: string | null
+    timings?: Partial<Record<keyof ListenTimings, number>>
   }>
   cancelListenOnce(): Promise<boolean>
   stopListenOnce(): Promise<boolean>
@@ -57,6 +62,9 @@ const native = requireOptionalNativeModule<NativeSpeech>("NaslukhSpeech")
 /** onAudioLevel шлётся, только если на него кто-то подписан (или audioLevelIntervalMs задан явно). */
 let audioLevelListeners = 0
 const DEFAULT_AUDIO_LEVEL_INTERVAL_MS = 66
+
+/** Пост-правка текста события куска теми же опциями, что у текущего listenOnce. */
+let activeListenCorrect: ((text: string) => string) | null = null
 
 function echoCancellationAvailable(): boolean {
   try {
@@ -215,12 +223,13 @@ export function createSpeechEngine(
         threads: 1,
         maxRecommendedDurationSec: 10 * 60 * 60,
         models: [GIGAAM_MODEL_ID],
-        partialResults: false,
+        partialResults: Boolean(native?.listenOnce),
         tts: false,
         audioLevel: Boolean(native?.listenOnce),
         speechPause: Boolean(native?.listenOnce),
         speechMonitor: Boolean(native?.startSpeechMonitor),
         echoCancellation: echoCancellationAvailable(),
+        incrementalDecode: Boolean(native?.listenOnce),
       }
     },
 
@@ -315,20 +324,6 @@ export function createSpeechEngine(
           "NaslukhSpeech не в APK: соберите Android с нативным модулем (см. @naslukh/speech-rn README)",
         )
       }
-      const result = await native.listenOnce({
-        vadThreshold: options.vadThreshold ?? 0.5,
-        vadMinSpeechSec: options.vadMinSpeechSec ?? 0.25,
-        vadMinSilenceSec: options.vadMinSilenceSec ?? 1.0,
-        numThreads: options.numThreads ?? 2,
-        startTimeoutSec: options.startTimeoutSec ?? 15,
-        maxDurationSec: options.maxDurationSec ?? 30,
-        saveAudio: options.saveAudio ?? false,
-        audioLevelIntervalMs:
-          options.audioLevelIntervalMs ?? (audioLevelListeners > 0 ? DEFAULT_AUDIO_LEVEL_INTERVAL_MS : 0),
-        speechPauseMs: options.speechPauseMs ?? 0,
-        echoCancellation: options.echoCancellation ?? false,
-        continueFromMonitor: options.continueFromMonitor ?? null,
-      })
       const brands = options.hotwords ?? []
       const correct = (text: string) =>
         correctAsrText(text ?? "", {
@@ -336,12 +331,51 @@ export function createSpeechEngine(
           brands,
           brandMinScore: options.brandMinScore ?? 0.72,
         })
+      activeListenCorrect = correct
+      let result: Awaited<ReturnType<NativeSpeech["listenOnce"]>>
+      try {
+        result = await native.listenOnce({
+          vadThreshold: options.vadThreshold ?? 0.5,
+          vadMinSpeechSec: options.vadMinSpeechSec ?? 0.25,
+          vadMinSilenceSec: options.vadMinSilenceSec ?? 1.0,
+          numThreads: options.numThreads ?? 2,
+          startTimeoutSec: options.startTimeoutSec ?? 15,
+          maxDurationSec: options.maxDurationSec ?? 30,
+          saveAudio: options.saveAudio ?? false,
+          audioLevelIntervalMs:
+            options.audioLevelIntervalMs ?? (audioLevelListeners > 0 ? DEFAULT_AUDIO_LEVEL_INTERVAL_MS : 0),
+          speechPauseMs: options.speechPauseMs ?? 0,
+          echoCancellation: options.echoCancellation ?? false,
+          continueFromMonitor: options.continueFromMonitor ?? null,
+          incrementalDecode: options.incrementalDecode ?? true,
+          incrementalPauseMs: options.incrementalPauseMs ?? 400,
+          maxSegmentSec: options.maxSegmentSec ?? 8,
+          minSegmentSec: options.minSegmentSec ?? 2,
+        })
+      } finally {
+        activeListenCorrect = null
+      }
+      const pieces = result.segments ?? []
+      // Куски склеиваются здесь, затем корректор идёт по склеенному тексту целиком.
+      const joined = pieces.length > 1 ? joinSegmentTexts(pieces) : result.text
+      const timings = result.timings
       return {
         ...(result.sessionId ? { sessionId: result.sessionId } : {}),
-        text: correct(result.text),
+        text: correct(joined),
         durationMs: result.durationMs,
         ...(result.audioUri ? { audioUri: result.audioUri } : {}),
-        segments: (result.segments ?? []).map((segment) => ({
+        ...(timings
+          ? {
+              timings: {
+                finalizeMs: Number(timings.finalizeMs) || 0,
+                tailDecodeMs: Number(timings.tailDecodeMs) || 0,
+                totalDecodeMs: Number(timings.totalDecodeMs) || 0,
+                segments: Number(timings.segments) || pieces.length,
+                endSilenceMs: Number(timings.endSilenceMs) || 0,
+              },
+            }
+          : {}),
+        segments: pieces.map((segment) => ({
           startSample: segment.startSample,
           endSample: segment.endSample,
           text: correct(segment.text),
@@ -383,6 +417,19 @@ export function createSpeechEngine(
 
     addSpeechResumeListener(listener: (event: SpeechResumeEvent) => void): () => void {
       return addNativeEventListener<SpeechResumeEvent>("onSpeechResume", listener)
+    },
+
+    addListenSegmentListener(listener: (event: ListenSegmentEvent) => void): () => void {
+      return addNativeEventListener<ListenSegmentEvent>("onListenSegment", (event) => {
+        const correct = activeListenCorrect
+        listener({
+          sessionId: String(event.sessionId),
+          index: Number(event.index) || 0,
+          text: correct ? correct(String(event.text ?? "")) : String(event.text ?? ""),
+          startMs: Number(event.startMs) || 0,
+          endMs: Number(event.endMs) || 0,
+        })
+      })
     },
 
     async monitorSpeech(options: MonitorSpeechOptions = {}): Promise<SpeechMonitor> {

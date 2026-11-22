@@ -15,6 +15,8 @@ object NaslukhEvents {
   const val SPEECH_PAUSE = "onSpeechPause"
   const val SPEECH_RESUME = "onSpeechResume"
   const val MONITOR_SPEECH = "onMonitorSpeech"
+  /** Кусок реплики расшифрован (черновой текст), реплика ещё идёт. */
+  const val LISTEN_SEGMENT = "onListenSegment"
 
   private const val TAG = "NaslukhEvents"
   private val mainHandler = Handler(Looper.getMainLooper())
@@ -25,6 +27,23 @@ object NaslukhEvents {
   fun send(name: String, body: Map<String, Any?>) {
     val listener = sink ?: return
     mainHandler.post {
+      try {
+        listener.invoke(name, body)
+      } catch (e: Exception) {
+        Log.w(TAG, "emit failed: $name", e)
+      }
+    }
+  }
+
+  /**
+   * Событие, которое нельзя доставлять после отмены: условие проверяется ещё раз на main looper
+   * непосредственно перед отправкой в JS.
+   */
+  fun sendIf(condition: () -> Boolean, name: String, body: Map<String, Any?>) {
+    val listener = sink ?: return
+    if (!condition()) return
+    mainHandler.post {
+      if (!condition()) return@post
       try {
         listener.invoke(name, body)
       } catch (e: Exception) {

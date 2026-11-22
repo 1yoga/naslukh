@@ -64,6 +64,12 @@ type ListenTiming = {
   recognitionMs: number
   endToTextMs: number
   endReason: "vad" | "stop" | "limit"
+  incremental?: boolean
+  finalizeMs?: number
+  tailDecodeMs?: number
+  totalDecodeMs?: number
+  segments?: number
+  endSilenceMs?: number
 }
 
 export default function App() {
@@ -717,6 +723,13 @@ export default function App() {
           <Text style={styles.statusLabel}>
             Замеры «Фразы» · {listenTiming.endReason === "vad" ? "VAD" : listenTiming.endReason === "stop" ? "вручную" : "лимит"}
           </Text>
+          {listenTiming.finalizeMs !== undefined ? (
+            <Text style={[styles.timingLine, { fontWeight: "700" }]}>
+              Конец речи → текст: {listenTiming.finalizeMs} мс · кусков {listenTiming.segments} · хвост{" "}
+              {listenTiming.tailDecodeMs} мс · всего {listenTiming.totalDecodeMs} мс
+            </Text>
+          ) : null}
+          <ScrollView style={{ maxHeight: 96 }} nestedScrollEnabled>
           {buttonToMicMs !== null ? (
             <Text style={styles.timingLine}>Кнопка → «Слушаем»: {buttonToMicMs} мс</Text>
           ) : null}
@@ -728,6 +741,7 @@ export default function App() {
           <Text style={styles.timingLine}>GigaAM ({listenTiming.recognizerReused ? "из памяти" : "создание"}): {listenTiming.recognizerCreationMs} мс</Text>
           <Text style={styles.timingLine}>Распознавание: {listenTiming.recognitionMs} мс</Text>
           <Text style={styles.timingLine}>Остановка записи → текст GigaAM: {listenTiming.endToTextMs} мс</Text>
+          </ScrollView>
           <Text style={styles.muted}>Отсчёты VAD включают ожидание речи и длительность фразы.</Text>
           {rawInputUri ? <Text style={styles.muted}>«Слушать вход» — звук от старта микрофона до первого срабатывания VAD.</Text> : null}
         </View>
